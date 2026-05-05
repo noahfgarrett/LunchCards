@@ -905,6 +905,17 @@ function renderLobby() {
         <label for="hubLink">Invite Link</label>
         <input id="hubLink" value="${escapeHtml(shareUrl)}" readonly>
       </div>
+      <div class="host-panel">
+        <div class="panel-title"><h2>Your Seat</h2><span class="pill">${seat ? `Seat ${seat.seat_index + 1}` : "Not seated"}</span></div>
+        <div class="field">
+          <label for="lobbyPlayerName">Your Name</label>
+          <input id="lobbyPlayerName" value="${escapeHtml(seat?.name || loadDisplayName())}" autocomplete="name">
+        </div>
+        <div class="button-row">
+          <button class="btn" data-action="save-player-name">Save Name</button>
+          ${!seat && lobby.status === "lobby" ? '<button class="btn primary" data-action="join-current-session">Join Session</button>' : ""}
+        </div>
+      </div>
       <div class="button-row">
         ${seat && lobby.status !== "playing" ? `<button class="btn" data-action="toggle-ready">${seat.is_ready ? "Mark Not Ready" : "Ready Up"}</button>` : ""}
         ${lobby.status === "playing" ? '<button class="btn primary" data-action="start-game">Open Table</button>' : ""}
@@ -1246,7 +1257,9 @@ function openSeatIndexes(lobby) {
 }
 
 async function joinLobby(code) {
-  const playerName = saveDisplayName(document.querySelector("#playerName")?.value || loadDisplayName());
+  if (!code) return;
+  const nameInput = document.querySelector("#lobbyPlayerName") || document.querySelector("#playerName");
+  const playerName = saveDisplayName(nameInput?.value || loadDisplayName());
   const lobby = await loadLobbyFromSupabase(code);
   if (!lobby) {
     toast("Session not found");
@@ -1265,6 +1278,23 @@ async function joinLobby(code) {
     render();
     return;
   }
+  const optimisticSeat = {
+    id: uid("player"),
+    client_id: state.clientId,
+    name: playerName,
+    human: true,
+    cpu: false,
+    difficulty: state.config.difficulty,
+    total: 0,
+    hand: [],
+    taken: [],
+    tricks: 0,
+    bid: null,
+    team: lobby.config.game === "euchre" ? open % 2 : lobby.config.players % 2 === 0 && lobby.config.game === "spades" ? open % 2 : open,
+    seat_index: open,
+    is_host: false,
+    is_ready: false
+  };
   const supabase = await getSupabaseClient();
   const { error } = await supabase.from("table_cards_players").insert({
     lobby_id: lobby.backendId,
@@ -1278,8 +1308,16 @@ async function joinLobby(code) {
   });
   if (error) {
     toast("Seat was taken. Refreshing");
+  } else {
+    state.lobby.seats = state.lobby.seats.concat(optimisticSeat).sort((a, b) => a.seat_index - b.seat_index);
+    render();
+    toast(`Joined as ${playerName}`);
   }
-  await refreshLobby(lobby.code);
+  const refreshed = await refreshLobby(lobby.code);
+  if (!error && refreshed && !currentSeat(refreshed)) {
+    state.lobby.seats = refreshed.seats.concat(optimisticSeat).sort((a, b) => a.seat_index - b.seat_index);
+    render();
+  }
   await refreshSessions();
 }
 
@@ -1292,6 +1330,34 @@ async function toggleReady() {
     .update({ is_ready: !seat.is_ready, last_seen: new Date().toISOString() })
     .eq("id", seat.backendId);
   await refreshLobby();
+}
+
+async function savePlayerName() {
+  const nextName = saveDisplayName(document.querySelector("#lobbyPlayerName")?.value || loadDisplayName());
+  const seat = currentSeat();
+  if (!seat) {
+    toast("Name saved");
+    render();
+    return;
+  }
+  seat.name = nextName;
+  if (state.game?.players?.[0]?.human) state.game.players[0].name = nextName;
+  render();
+  const supabase = await getSupabaseClient();
+  if (supabase && seat.backendId) {
+    await supabase
+      .from("table_cards_players")
+      .update({ name: nextName, last_seen: new Date().toISOString() })
+      .eq("id", seat.backendId);
+    if (seat.is_host && state.lobby?.backendId) {
+      await supabase
+        .from("table_cards_lobbies")
+        .update({ host_name: nextName, updated_at: new Date().toISOString() })
+        .eq("id", state.lobby.backendId);
+    }
+  }
+  await refreshLobby();
+  toast("Name updated");
 }
 
 async function leaveLobby() {
@@ -1447,8 +1513,10 @@ app.addEventListener("click", event => {
   if (action === "create-lobby") void createLobby();
   if (action === "refresh-sessions") void refreshSessions();
   if (action === "join-session") void joinLobby(target.dataset.code);
+  if (action === "join-current-session") void joinLobby(state.lobby?.code);
   if (action === "refresh-lobby") void refreshLobby();
   if (action === "toggle-ready") void toggleReady();
+  if (action === "save-player-name") void savePlayerName();
   if (action === "leave-session") void leaveLobby();
   if (action === "save-host-settings") void saveHostSettings();
   if (action === "copy-link") {
