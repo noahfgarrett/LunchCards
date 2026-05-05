@@ -64,6 +64,11 @@ const state = {
     playerName: "Noah",
     players: 4,
     difficulty: "normal",
+    difficulties: {
+      hearts: "normal",
+      spades: "normal",
+      euchre: "normal"
+    },
     target: 100
   },
   lobby: null,
@@ -198,22 +203,26 @@ function makePlayers(count, name, difficulty, gameType) {
   }));
 }
 
-async function createLobby() {
-  const meta = GAMES[state.config.game];
+function readSetupConfig() {
+  const game = state.config.game;
+  const meta = GAMES[game];
   const playerName = saveDisplayName(document.querySelector("#playerName")?.value || loadDisplayName());
   const requested = Number(document.querySelector("#playerCount")?.value || meta.defaultPlayers);
-  const players = state.config.game === "euchre" ? 4 : clamp(requested, meta.min, meta.max);
+  const players = game === "euchre" ? 4 : clamp(requested, meta.min, meta.max);
+  const difficulty = document.querySelector("#difficulty")?.value || state.config.difficulties?.[game] || state.config.difficulty;
+  const targetValue = Number(document.querySelector("#targetScore")?.value || meta.target);
+  const target = Number.isFinite(targetValue) ? targetValue : meta.target;
+  state.config.difficulties = { ...state.config.difficulties, [game]: difficulty };
+  return { game, players, difficulty, target, playerName };
+}
+
+async function createLobby() {
+  const setup = readSetupConfig();
   const lobby = {
     id: uid("lobby"),
     code: createSessionCode(),
     createdAt: new Date().toISOString(),
-    config: {
-      game: state.config.game,
-      players,
-      difficulty: document.querySelector("#difficulty")?.value || state.config.difficulty,
-      target: Number(document.querySelector("#targetScore")?.value || meta.target),
-      playerName
-    },
+    config: setup,
     seats: []
   };
   lobby.seats = [{
@@ -242,6 +251,30 @@ async function createLobby() {
   if (synced) await refreshLobby(lobby.code);
   await refreshSessions();
   toast("Session ready");
+}
+
+function createSoloGame() {
+  const setup = readSetupConfig();
+  const seats = makePlayers(setup.players, setup.playerName, setup.difficulty, setup.game).map((player, index) => ({
+    ...player,
+    seat_index: index,
+    is_host: index === 0,
+    is_ready: true,
+    client_id: index === 0 ? state.clientId : `solo-cpu-${setup.game}-${index}`
+  }));
+  state.config = { ...state.config, ...setup };
+  state.lobby = {
+    id: uid("solo"),
+    code: "SOLO",
+    status: "playing",
+    createdAt: new Date().toISOString(),
+    config: setup,
+    seats
+  };
+  state.game = null;
+  history.replaceState({}, "", new URL(window.location.pathname, window.location.origin).href);
+  createGameFromLobby();
+  toast(`${GAMES[setup.game].title} solo table ready`);
 }
 
 function createSessionCode() {
@@ -834,6 +867,7 @@ function renderTopbar() {
 function renderSetup() {
   const meta = GAMES[state.config.game];
   const sessions = getJoinableSessions(state.sessions);
+  const selectedDifficulty = state.config.difficulties?.[state.config.game] || state.config.difficulty;
   return `${renderTopbar()}
   <section class="screen setup-grid">
     <div class="panel">
@@ -848,8 +882,8 @@ function renderSetup() {
           <input id="playerCount" type="number" min="${meta.min}" max="${meta.max}" value="${meta.defaultPlayers}" ${state.config.game === "euchre" ? "disabled" : ""}>
         </div>
         <div class="field">
-          <label for="difficulty">CPU Difficulty</label>
-          <select id="difficulty">${Object.entries(DIFFICULTY).map(([key, value]) => `<option value="${key}" ${key === state.config.difficulty ? "selected" : ""}>${value.label}</option>`).join("")}</select>
+          <label for="difficulty">${meta.title} CPU Difficulty</label>
+          <select id="difficulty">${Object.entries(DIFFICULTY).map(([key, value]) => `<option value="${key}" ${key === selectedDifficulty ? "selected" : ""}>${value.label}</option>`).join("")}</select>
         </div>
         <div class="field">
           <label for="targetScore">Target Score</label>
@@ -857,7 +891,8 @@ function renderSetup() {
         </div>
       </div>
       <div class="button-row">
-        <button class="btn primary" data-action="create-lobby">Create Session</button>
+        <button class="btn primary" data-action="play-solo">Play Solo</button>
+        <button class="btn" data-action="create-lobby">Create Session</button>
         <button class="btn" data-action="refresh-sessions">Refresh</button>
       </div>
     </div>
@@ -879,7 +914,7 @@ function renderSetup() {
         ${Object.entries(GAMES).map(([key, game]) => `<button class="game-card" data-action="select-game" data-game="${key}" aria-pressed="${state.config.game === key}">
           <strong>${game.title}</strong>
           <span>${game.summary}</span>
-          <div class="pill-row"><span class="pill">${game.range}</span><span class="pill">${game.target} target</span></div>
+          <div class="pill-row"><span class="pill">${game.range}</span><span class="pill">${game.target} target</span><span class="pill">CPU ${DIFFICULTY[state.config.difficulties?.[key] || state.config.difficulty].label}</span></div>
         </button>`).join("")}
       </div>
     </div>
@@ -1507,9 +1542,11 @@ app.addEventListener("click", event => {
   if (action === "select-game") {
     const game = target.dataset.game;
     state.config.game = game;
+    state.config.difficulty = state.config.difficulties?.[game] || state.config.difficulty;
     state.config.target = GAMES[game].target;
     render();
   }
+  if (action === "play-solo") createSoloGame();
   if (action === "create-lobby") void createLobby();
   if (action === "refresh-sessions") void refreshSessions();
   if (action === "join-session") void joinLobby(target.dataset.code);
@@ -1539,6 +1576,13 @@ app.addEventListener("click", event => {
   if (action === "trump-order") trumpAction("order", target.dataset.suit);
   if (action === "trump-pass") trumpAction("pass");
   if (action === "new-round") startRound();
+});
+
+app.addEventListener("change", event => {
+  if (event.target.id !== "difficulty") return;
+  state.config.difficulty = event.target.value;
+  state.config.difficulties = { ...state.config.difficulties, [state.config.game]: event.target.value };
+  render();
 });
 
 async function bootFromUrl() {
