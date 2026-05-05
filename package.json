@@ -1,0 +1,6 @@
+{
+  "type": "module",
+  "scripts": {
+    "test": "node tests/queue-state.test.js && node --check app.js"
+  }
+}
