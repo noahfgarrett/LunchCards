@@ -83,31 +83,39 @@ async function testMultiplayerHearts() {
   const reloadedHand = await guestB.locator(".hand-zone .card").evaluateAll(cards => cards.map(card => card.dataset.card));
   assert.deepEqual(reloadedHand, hands[2], "reload must resume the same hand");
 
-  for (const page of pages) {
+  for (const [index, page] of pages.entries()) {
     const cards = page.locator(".hand-zone .card");
     await cards.nth(0).click();
     await cards.nth(1).click();
     await cards.nth(2).click();
     await page.getByRole("button", { name: "Pass 3" }).click();
     await page.waitForTimeout(700);
+    if (index < pages.length - 1) {
+      const earlyReveals = await Promise.all(pages.map(client => client.getByRole("heading", { name: "Cards Received" }).isVisible()));
+      assert.deepEqual(earlyReveals, [false, false, false], "received cards must stay hidden until every player locks a pass");
+    }
   }
   await Promise.all(pages.map(page => page.getByRole("heading", { name: "Cards Received" }).waitFor({ timeout: 12000 })));
   await Promise.all(pages.map(page => page.getByRole("button", { name: "Place In Hand" }).click()));
 
-  for (let play = 0; play < 3; play += 1) {
+  for (let play = 0; play < 51; play += 1) {
     const turn = await waitForHumanTurn(pages);
     await turn.card.click();
-    await turn.page.waitForTimeout(700);
+    await turn.page.waitForTimeout(350);
   }
-  await host.locator(".played-card.is-winner").waitFor({ timeout: 10000 });
-  await Promise.all(pages.map(page => page.locator(".log").getByText(/takes trick 1/).waitFor({ timeout: 10000 })));
+  await host.getByRole("button", { name: "Next Round" }).waitFor({ timeout: 10000 });
+  await Promise.all(pages.map(page => page.locator(".log").getByText(/takes trick 17/).waitFor({ timeout: 10000 })));
+  assert.deepEqual(await Promise.all(pages.map(page => page.locator(".hand-zone .card").count())), [0, 0, 0]);
   const logs = await Promise.all(pages.map(page => page.locator(".log").textContent()));
-  assert(logs.every(log => /takes trick 1/.test(log)), "all clients must observe the same completed trick");
+  assert(logs.every(log => /takes trick 17/.test(log)), "all clients must observe the complete round");
+  assert(logs.every(log => log === logs[0]), "all clients must have the same round history");
+  const scores = await Promise.all(pages.map(page => page.locator(".score-row").allTextContents()));
+  assert(scores.every(score => JSON.stringify(score) === JSON.stringify(scores[0])), "all clients must have the same final scores");
 
   await host.getByRole("button", { name: "Leave Table" }).click();
   await host.getByRole("button", { name: "Close Session" }).click();
   await host.getByRole("heading", { name: "Coworker Queue" }).waitFor();
-  return code;
+  return { code, multiplayerPlays: 51, multiplayerTricks: 17 };
 }
 
 async function testSoloGames() {
@@ -183,13 +191,13 @@ async function testPwaOfflineShell() {
 }
 
 try {
-  const code = await testMultiplayerHearts();
+  const multiplayer = await testMultiplayerHearts();
   await testSoloGames();
   await testSetupAndSafeRendering();
   await testDesktopTableLayout();
   await testPwaOfflineShell();
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ status: "passed", multiplayerCode: code, browserErrors: errors.length }));
+  console.log(JSON.stringify({ status: "passed", multiplayerCode: multiplayer.code, multiplayerPlays: multiplayer.multiplayerPlays, multiplayerTricks: multiplayer.multiplayerTricks, browserErrors: errors.length }));
 } finally {
   await Promise.all(contexts.map(context => context.close()));
   await browser.close();
