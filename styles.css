@@ -278,6 +278,31 @@ select:focus {
   font-weight: 700;
 }
 
+.connection-online {
+  border-color: rgba(131, 230, 173, 0.48);
+  color: var(--green);
+}
+
+.connection-offline {
+  border-color: rgba(199, 54, 70, 0.56);
+  color: #ffb2bb;
+}
+
+.roster-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--brass);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+}
+
+.roster-summary strong {
+  color: var(--ivory);
+}
+
 .hub-code {
   display: flex;
   align-items: center;
@@ -341,7 +366,7 @@ select:focus {
 
 .table {
   position: relative;
-  min-height: 700px;
+  min-height: 760px;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 22px;
@@ -368,7 +393,7 @@ select:focus {
   right: 20px;
   z-index: 3;
   display: grid;
-  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 10px;
 }
 
@@ -412,7 +437,7 @@ select:focus {
 
 .seat.pos-bottom {
   left: 50%;
-  bottom: 170px;
+  bottom: 235px;
   transform: translateX(-50%);
 }
 
@@ -444,12 +469,12 @@ select:focus {
 
 .seat.pos-bottom-left {
   left: 16%;
-  bottom: 170px;
+  bottom: 235px;
 }
 
 .seat.pos-bottom-right {
   right: 16%;
-  bottom: 170px;
+  bottom: 235px;
 }
 
 .seat-meta {
@@ -494,6 +519,15 @@ select:focus {
 
 .played-card small {
   color: var(--muted);
+}
+
+.played-card.is-winner .card {
+  box-shadow: 0 0 0 3px rgba(240, 198, 107, 0.82), 0 16px 28px rgba(0, 0, 0, 0.36);
+}
+
+.played-card.is-winner small {
+  color: var(--brass);
+  font-weight: 800;
 }
 
 .hand-zone {
@@ -625,11 +659,14 @@ select:focus {
   box-shadow: var(--shadow);
 }
 
+.toast-slot {
+  max-width: 1440px;
+  margin: -6px auto 10px;
+}
+
 .toast {
-  position: fixed;
-  z-index: 20;
-  right: 20px;
-  bottom: 20px;
+  position: relative;
+  z-index: 5;
   max-width: 360px;
   padding: 12px 14px;
   border: 1px solid var(--line);
@@ -637,9 +674,10 @@ select:focus {
   color: var(--ivory);
   background: var(--panel-strong);
   box-shadow: var(--shadow);
+  pointer-events: none;
 }
 
-@media (max-width: 980px) {
+@media (max-width: 1180px) {
   .setup-grid,
   .lobby-grid,
   .table-grid {
@@ -655,11 +693,11 @@ select:focus {
   }
 
   .side-panel {
-    order: -1;
+    order: 2;
   }
 }
 
-@media (max-width: 720px) {
+@media (max-width: 980px) {
   :root {
     --card-w: 54px;
     --card-h: 80px;
@@ -859,9 +897,6 @@ select:focus {
   }
 
   .toast {
-    right: max(10px, env(safe-area-inset-right));
-    bottom: max(10px, env(safe-area-inset-bottom));
-    left: max(10px, env(safe-area-inset-left));
     max-width: none;
   }
 }

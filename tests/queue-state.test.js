@@ -18,8 +18,10 @@ assert.equal(formatSeatLabel({ name: "Noah", is_cpu: false, is_ready: true, is_h
 assert.equal(formatSeatLabel(null, 3), "Seat 4: Open");
 assert.equal(describeSessionStatus(sessions[0]), "2/4 seated · Hearts · Lobby");
 assert.equal(describeSessionStatus(sessions[1]), "3/4 seated · Spades · In progress");
-assert.equal(canLaunchSession({ player_count: 4, players: [{}, {}, {}, {}] }), true);
-assert.equal(canLaunchSession({ player_count: 4, players: [{}, {}, {}] }), false);
+assert.equal(canLaunchSession({ player_count: 4, players: Array.from({ length: 4 }, () => ({ is_ready: true })) }), true);
+assert.equal(canLaunchSession({ player_count: 4, players: Array.from({ length: 4 }, () => ({ is_ready: false })) }), false);
+assert.equal(canLaunchSession({ player_count: 4, players: Array.from({ length: 5 }, () => ({ is_ready: true })) }), false);
+assert.equal(canLaunchSession({ player_count: 4, players: Array.from({ length: 3 }, () => ({ is_ready: true })) }), false);
 assert.equal(makeSessionShareUrl("https://noahfgarrett.github.io/LunchCards/?x=1", "ALPHA"), "https://noahfgarrett.github.io/LunchCards/?x=1&hub=ALPHA");
 
 console.log("queue-state tests passed");

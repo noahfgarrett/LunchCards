@@ -22,7 +22,9 @@ export function describeSessionStatus(session) {
 }
 
 export function canLaunchSession(session) {
-  return (session.players?.length || 0) >= Number(session.player_count || 0);
+  const players = Array.isArray(session.players) ? session.players : [];
+  const required = Number(session.player_count || 0);
+  return required > 0 && players.length === required && players.every(player => player.is_ready);
 }
 
 export function makeSessionShareUrl(currentUrl, code) {

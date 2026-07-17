@@ -1,6 +1,18 @@
 {
   "type": "module",
   "scripts": {
-    "test": "node tests/queue-state.test.js && node --check app.js"
+    "build:vendor": "esbuild node_modules/@supabase/supabase-js/dist/index.mjs --bundle --format=esm --platform=browser --minify --outfile=supabase-client.js",
+    "test:e2e": "node tests/e2e.mjs",
+    "test:difficulty": "node tests/difficulty-behavior.mjs",
+    "test:rounds": "node tests/full-rounds.mjs",
+    "test": "node tests/queue-state.test.js && node --check app.js && node --check sw.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.110.7"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.10.2",
+    "@playwright/test": "1.61.1",
+    "esbuild": "0.25.6"
   }
 }

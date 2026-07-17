@@ -13,12 +13,13 @@ Supabase docs checked for this setup:
 - Realtime Presence: https://supabase.com/docs/guides/realtime/presence
 - Realtime Authorization: https://supabase.com/docs/guides/realtime/authorization
 
-## Recommended Hub Model
+## Hub Model
 
-- `lobbies` stores lobby metadata and the join code.
-- `lobby_players` stores seats.
-- Realtime Presence can track who is currently connected to `lunch-cards:<lobby-code>`.
-- Realtime Broadcast sends low-latency game events after the host validates each move.
+- `table_cards_lobbies` stores lobby metadata, expiry, and the versioned canonical game snapshot.
+- `table_cards_players` stores seats, readiness, CPU settings, and hashed seat credentials.
+- Realtime Postgres Changes invalidates client state; a five-second poll is the fallback.
+- Public clients cannot directly insert, update, or delete lobby/player rows.
+- Token-validating RPCs provide atomic joins, host controls, heartbeats, and optimistic game updates.
 
 ## Browser Config
 
@@ -35,6 +36,10 @@ This config is already present before `app.js` in `index.html`:
 
 Do not put a secret key or service role key in GitHub Pages.
 
-## Minimal Schema
+## Schema
 
-Run `supabase-schema.sql` in the Supabase SQL editor. It keeps RLS on for public tables and allows anonymous coworker lobby creation. For stricter company-only access, add Supabase Auth and replace the permissive policies with authenticated email-domain policies.
+Run `supabase-schema.sql` in the Supabase SQL editor. It is idempotent and upgrades an older Lunch Cards schema in place. RLS remains enabled, sensitive token hashes and game state are excluded from public table reads, and game state is returned only to a browser presenting a valid seat token.
+
+The RPCs are intentionally callable with the publishable key because this is a no-login coworker app. Each privileged operation validates a 256-bit seat token inside a `SECURITY DEFINER` function. Supabase's generic advisor reports those exposed functions as warnings; direct row writes and wrong-token calls are covered by the security acceptance checks.
+
+For company-domain enforcement or stronger anti-cheat guarantees, the next architectural step is Supabase Auth plus a server-side rules engine. Currently, every seated player receives the canonical snapshot, including all hands, so a technically inclined participant could inspect network data.
