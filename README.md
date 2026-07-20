@@ -6,7 +6,9 @@ https://noahfgarrett.github.io/LunchCards/
 
 The static PWA is hosted on GitHub Pages and uses the existing `TableCards` Supabase project for live party and authoritative match state.
 
-Use **Play Solo** to start Hearts, Spades, or Euchre immediately against CPU seats. Each game remembers its own CPU difficulty choice.
+Use **Play Solo** to start Hearts, Spades, Euchre, or Texas Hold'em immediately against CPU seats. Each game remembers its own CPU difficulty choice.
+
+Cards animate through dealing, Hearts passing and receiving, play-to-center, winner highlighting, and trick collection. Collection direction is rotated per client, so the same winning seat moves toward the correct person on every screen.
 
 ## Development
 
@@ -15,10 +17,12 @@ npm install
 npm run build:vendor
 npm test
 python3 -m http.server 4173
+npm run test:animations
+npm run test:holdem
 npm run test:e2e
 ```
 
-The end-to-end suite runs Chromium headlessly. It covers concurrent party joins, mobile name focus, roster propagation, readiness, one canonical multiplayer deal, reload/resume, Hearts passing and a synchronized trick, mobile Spades/Euchre smoke tests, setup draft preservation, and name-rendering injection protection.
+The browser suites run Chromium headlessly. They cover concurrent party joins, mobile name focus, roster propagation, readiness, canonical multiplayer deals, reload/resume, a complete three-human Hearts round, locally rotated trick collection, Hearts pass/receive motion, a complete two-human Hold'em hand, CPU difficulty behavior, mobile layouts, accessibility, offline startup, setup draft preservation, and name-rendering injection protection.
 
 ## Multiplayer Model
 

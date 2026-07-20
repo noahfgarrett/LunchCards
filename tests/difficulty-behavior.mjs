@@ -19,12 +19,14 @@ async function play(gameName, difficulty) {
   await page.getByRole("button", { name: "Play Solo" }).click();
 
   for (let step = 0; step < 500; step += 1) {
-    if (await page.getByRole("button", { name: "Next Round" }).count()) break;
+    if (await page.getByRole("button", { name: /Next Round|Next Hand/ }).count()) break;
     const received = page.getByRole("button", { name: "Place In Hand" });
     const bid = page.getByRole("button", { name: "Lock Bid" });
     const trump = page.locator('[data-action="trump-order"]').first();
     const pass = page.getByRole("button", { name: "Pass 3" });
     const card = page.locator(".hand-zone .card:not([disabled])").first();
+    const pokerCheck = page.getByRole("button", { name: "Check" });
+    const pokerCall = page.getByRole("button", { name: /^Call/ });
     if (await received.count()) await received.click();
     else if (await bid.count()) await bid.click();
     else if (await trump.count()) await trump.click();
@@ -34,10 +36,12 @@ async function play(gameName, difficulty) {
       await cards.nth(1).click();
       await cards.nth(2).click();
       await pass.click();
-    } else if (await card.count()) await card.click();
+    } else if (await pokerCheck.count()) await pokerCheck.click();
+    else if (await pokerCall.count()) await pokerCall.click();
+    else if (await card.count()) await card.click();
     else await page.waitForTimeout(20);
   }
-  await page.getByRole("button", { name: "Next Round" }).waitFor({ timeout: 15000 });
+  await page.getByRole("button", { name: /Next Round|Next Hand/ }).waitFor({ timeout: 15000 });
   const result = {
     log: await page.locator(".log").innerText(),
     scores: await page.locator(".score-list").innerText()
@@ -48,7 +52,7 @@ async function play(gameName, difficulty) {
 
 try {
   const results = {};
-  for (const game of ["Hearts", "Spades", "Euchre"]) {
+  for (const game of ["Hearts", "Spades", "Euchre", "Texas Hold'em"]) {
     const easy = await play(game, "easy");
     const expert = await play(game, "expert");
     assert.notDeepEqual(expert, easy, `${game} Easy and Expert must make meaningfully different decisions`);

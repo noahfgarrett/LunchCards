@@ -29,7 +29,13 @@ async function waitForHumanTurn(pages) {
     }
     await pages[0].waitForTimeout(250);
   }
-  throw new Error("No human received a playable turn");
+  const diagnostics = await Promise.all(pages.map(page => page.evaluate(() => ({
+    state: Array.from(document.querySelectorAll(".stat")).map(element => element.innerText.replaceAll("\n", ": ")),
+    enabledCards: document.querySelectorAll(".hand-zone .card:not([disabled])").length,
+    handCards: document.querySelectorAll(".hand-zone .card").length,
+    dialog: document.querySelector(".action-panel h2")?.textContent || ""
+  }))));
+  throw new Error(`No human received a playable turn: ${JSON.stringify(diagnostics)}`);
 }
 
 async function testMultiplayerHearts() {
@@ -98,7 +104,18 @@ async function testMultiplayerHearts() {
   await Promise.all(pages.map(page => page.getByRole("heading", { name: "Cards Received" }).waitFor({ timeout: 12000 })));
   await Promise.all(pages.map(page => page.getByRole("button", { name: "Place In Hand" }).click()));
 
-  for (let play = 0; play < 51; play += 1) {
+  for (let play = 0; play < 3; play += 1) {
+    const turn = await waitForHumanTurn(pages);
+    await turn.card.click();
+    await turn.page.waitForTimeout(350);
+  }
+  await Promise.all(pages.map(page => page.locator(".trick-zone.is-collecting").waitFor({ timeout: 10000 })));
+  assert.deepEqual(await Promise.all(pages.map(page => page.locator(".trick-zone.is-collecting .played-card").count())), [3, 3, 3]);
+  assert.deepEqual(await Promise.all(pages.map(page => page.locator(".trick-zone.is-collecting .played-card.is-winner").count())), [1, 1, 1]);
+  const collectionClasses = await Promise.all(pages.map(page => page.locator(".trick-zone.is-collecting").getAttribute("class")));
+  assert.equal(new Set(collectionClasses).size, 3, "each multiplayer client must rotate the collection direction around its local seat");
+
+  for (let play = 3; play < 51; play += 1) {
     const turn = await waitForHumanTurn(pages);
     await turn.card.click();
     await turn.page.waitForTimeout(350);
@@ -109,13 +126,77 @@ async function testMultiplayerHearts() {
   const logs = await Promise.all(pages.map(page => page.locator(".log").textContent()));
   assert(logs.every(log => /takes trick 17/.test(log)), "all clients must observe the complete round");
   assert(logs.every(log => log === logs[0]), "all clients must have the same round history");
-  const scores = await Promise.all(pages.map(page => page.locator(".score-row").allTextContents()));
+  let scores = [];
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    scores = await Promise.all(pages.map(page => page.locator(".score-row").allTextContents()));
+    if (scores.every(score => JSON.stringify(score) === JSON.stringify(scores[0]))) break;
+    await host.waitForTimeout(250);
+  }
   assert(scores.every(score => JSON.stringify(score) === JSON.stringify(scores[0])), "all clients must have the same final scores");
 
   await host.getByRole("button", { name: "Leave Table" }).click();
   await host.getByRole("button", { name: "Close Session" }).click();
   await host.getByRole("heading", { name: "Coworker Queue" }).waitFor();
   return { code, multiplayerPlays: 51, multiplayerTricks: 17 };
+}
+
+async function testMultiplayerHoldem() {
+  const host = await makePage({ width: 390, height: 844 });
+  const guest = await makePage({ width: 390, height: 844 });
+  const pages = [host, guest];
+
+  await host.goto(baseUrl, { waitUntil: "networkidle" });
+  await host.getByRole("button", { name: /^Texas Hold'em/ }).click();
+  await host.getByLabel("Name").fill("QA Poker Host");
+  await host.getByLabel("Seats").fill("2");
+  await host.getByRole("button", { name: "Create Session" }).click();
+  await host.getByText("Session ready").waitFor();
+  const code = (await host.locator(".hub-code strong").textContent()).trim();
+
+  await guest.goto(`${baseUrl}/?hub=${code}`, { waitUntil: "networkidle" });
+  await guest.getByLabel("Your Name").fill("QA Poker Guest");
+  await guest.getByRole("button", { name: "Join Session" }).click();
+  await Promise.all(pages.map(page => page.getByText("2/2 seated").waitFor({ timeout: 10000 })));
+  await guest.getByRole("button", { name: "Ready Up" }).click();
+  await host.waitForFunction(() => !document.querySelector('[data-action="start-game"]')?.disabled);
+  await host.getByRole("button", { name: "Launch Table" }).click();
+  await Promise.all(pages.map(page => page.locator(".poker-board").waitFor({ timeout: 12000 })));
+
+  const holeCards = await Promise.all(pages.map(page => page.locator(".hand-zone .card").evaluateAll(cards => cards.map(card => card.dataset.card))));
+  assert.equal(new Set(holeCards.flat()).size, 4, "multiplayer Hold'em hole cards must be disjoint");
+
+  for (let action = 0; action < 12; action += 1) {
+    if (await host.getByRole("button", { name: /Next Hand|New Match/ }).count()) break;
+    let acted = false;
+    for (const page of pages) {
+      const check = page.getByRole("button", { name: "Check" });
+      const call = page.getByRole("button", { name: /^Call/ });
+      if (await check.count()) {
+        await check.click();
+        acted = true;
+        break;
+      }
+      if (await call.count()) {
+        await call.click();
+        acted = true;
+        break;
+      }
+    }
+    await host.waitForTimeout(acted ? 500 : 250);
+  }
+
+  await host.getByRole("button", { name: /Next Hand|New Match/ }).waitFor({ timeout: 12000 });
+  await guest.locator(".poker-mini-card:not(.back)").first().waitFor({ timeout: 12000 });
+  assert.deepEqual(await Promise.all(pages.map(page => page.locator(".community-cards .card").count())), [5, 5]);
+  const boards = await Promise.all(pages.map(page => page.locator(".community-cards .card").evaluateAll(cards => cards.map(card => card.dataset.card))));
+  assert.deepEqual(boards[1], boards[0], "both Hold'em clients must see the same board");
+  const scores = await Promise.all(pages.map(page => page.locator(".score-list").innerText()));
+  assert.equal(scores[1], scores[0], "both Hold'em clients must see the same chip counts");
+
+  await host.getByRole("button", { name: "Leave Table" }).click();
+  await host.getByRole("button", { name: "Close Session" }).click();
+  await host.getByRole("heading", { name: "Coworker Queue" }).waitFor();
+  return code;
 }
 
 async function testSoloGames() {
@@ -144,6 +225,8 @@ async function testSetupAndSafeRendering() {
   await setup.goto(baseUrl, { waitUntil: "networkidle" });
   const accessibility = await new AxeBuilder({ page: setup }).withTags(["wcag2a", "wcag2aa"]).analyze();
   assert.deepEqual(accessibility.violations.map(violation => violation.id), []);
+  assert.equal(await setup.locator(".game-card").count(), 4);
+  await setup.screenshot({ path: "/tmp/lunchcards-home-four-games.png", fullPage: true });
   await setup.getByLabel("Seats").fill("8");
   await setup.getByLabel("Target Score").fill("75");
   await setup.getByLabel(/CPU Difficulty/i).selectOption("hard");
@@ -192,12 +275,13 @@ async function testPwaOfflineShell() {
 
 try {
   const multiplayer = await testMultiplayerHearts();
+  const holdemCode = await testMultiplayerHoldem();
   await testSoloGames();
   await testSetupAndSafeRendering();
   await testDesktopTableLayout();
   await testPwaOfflineShell();
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ status: "passed", multiplayerCode: multiplayer.code, multiplayerPlays: multiplayer.multiplayerPlays, multiplayerTricks: multiplayer.multiplayerTricks, browserErrors: errors.length }));
+  console.log(JSON.stringify({ status: "passed", multiplayerCode: multiplayer.code, holdemCode, multiplayerPlays: multiplayer.multiplayerPlays, multiplayerTricks: multiplayer.multiplayerTricks, browserErrors: errors.length }));
 } finally {
   await Promise.all(contexts.map(context => context.close()));
   await browser.close();

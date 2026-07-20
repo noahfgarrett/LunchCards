@@ -230,7 +230,7 @@ select:focus {
 
 .game-list {
   display: grid;
-  grid-template-columns: repeat(3, minmax(180px, 1fr));
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
   gap: 12px;
 }
 
@@ -499,6 +499,54 @@ select:focus {
   border: 1px solid rgba(0, 0, 0, 0.22);
 }
 
+.seat.is-folded {
+  opacity: 0.56;
+}
+
+.dealer-button {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-left: 5px;
+  border: 1px solid rgba(240, 198, 107, 0.7);
+  border-radius: 50%;
+  color: #191510;
+  background: var(--brass);
+  font-size: 0.7rem;
+  font-weight: 900;
+}
+
+.poker-hole-cards {
+  display: flex;
+  gap: 5px;
+  min-height: 30px;
+}
+
+.poker-mini-card {
+  display: inline-grid;
+  place-items: center;
+  min-width: 28px;
+  height: 34px;
+  padding: 0 4px;
+  border: 1px solid rgba(20, 18, 16, 0.22);
+  border-radius: 4px;
+  color: #1a1715;
+  background: #fff8e8;
+  font-size: 0.8rem;
+  font-weight: 900;
+}
+
+.poker-mini-card.red {
+  color: var(--red);
+}
+
+.poker-mini-card.back {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.16), transparent),
+    repeating-linear-gradient(45deg, #173d34 0, #173d34 4px, #2e745f 4px, #2e745f 8px);
+}
+
 .trick-zone {
   position: absolute;
   z-index: 2;
@@ -511,23 +559,121 @@ select:focus {
   min-height: var(--card-h);
 }
 
+.poker-board {
+  position: absolute;
+  z-index: 2;
+  top: 45%;
+  left: 50%;
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+  transform: translate(-50%, -50%);
+}
+
+.poker-board-meta,
+.poker-action-summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.community-cards {
+  display: grid;
+  grid-template-columns: repeat(5, var(--card-w));
+  gap: 8px;
+}
+
+.community-cards .card:disabled {
+  opacity: 1;
+}
+
+.community-slot {
+  width: var(--card-w);
+  height: var(--card-h);
+  border: 1px dashed rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  background: rgba(3, 13, 11, 0.16);
+}
+
+.community-card.is-dealing {
+  animation: community-card-in 460ms calc(var(--card-index) * 70ms) cubic-bezier(0.18, 0.78, 0.22, 1) both;
+}
+
+.poker-actions {
+  gap: 12px;
+}
+
+.poker-action-summary {
+  justify-content: flex-start;
+  color: var(--muted);
+  font-weight: 800;
+}
+
 .played-card {
   display: grid;
   gap: 6px;
   justify-items: center;
+  will-change: transform, opacity;
 }
 
 .played-card small {
   color: var(--muted);
 }
 
+.played-card .card:disabled {
+  opacity: 1;
+}
+
+.played-card.is-entering {
+  --enter-x: 0px;
+  --enter-y: 0px;
+}
+
+.played-card.is-entering.enter-pos-bottom { --enter-y: 190px; }
+.played-card.is-entering.enter-pos-top { --enter-y: -210px; }
+.played-card.is-entering.enter-pos-left { --enter-x: -300px; }
+.played-card.is-entering.enter-pos-right { --enter-x: 300px; }
+.played-card.is-entering.enter-pos-top-left { --enter-x: -230px; --enter-y: -170px; }
+.played-card.is-entering.enter-pos-top-right { --enter-x: 230px; --enter-y: -170px; }
+.played-card.is-entering.enter-pos-bottom-left { --enter-x: -230px; --enter-y: 160px; }
+.played-card.is-entering.enter-pos-bottom-right { --enter-x: 230px; --enter-y: 160px; }
+
+.played-card.is-entering .card {
+  animation: play-card-in 360ms cubic-bezier(0.22, 0.78, 0.2, 1) both;
+}
+
 .played-card.is-winner .card {
-  box-shadow: 0 0 0 3px rgba(240, 198, 107, 0.82), 0 16px 28px rgba(0, 0, 0, 0.36);
+  animation: winner-flash 900ms 280ms ease both;
+}
+
+.played-card.is-entering.is-winner .card {
+  animation:
+    play-card-in 360ms cubic-bezier(0.22, 0.78, 0.2, 1) both,
+    winner-flash 900ms 280ms ease both;
 }
 
 .played-card.is-winner small {
   color: var(--brass);
   font-weight: 800;
+}
+
+.trick-zone.is-collecting {
+  --collect-x: 0px;
+  --collect-y: 0px;
+}
+
+.trick-zone.collect-pos-bottom { --collect-y: 270px; }
+.trick-zone.collect-pos-top { --collect-y: -280px; }
+.trick-zone.collect-pos-left { --collect-x: -390px; }
+.trick-zone.collect-pos-right { --collect-x: 390px; }
+.trick-zone.collect-pos-top-left { --collect-x: -300px; --collect-y: -230px; }
+.trick-zone.collect-pos-top-right { --collect-x: 300px; --collect-y: -230px; }
+.trick-zone.collect-pos-bottom-left { --collect-x: -300px; --collect-y: 210px; }
+.trick-zone.collect-pos-bottom-right { --collect-x: 300px; --collect-y: 210px; }
+
+.trick-zone.is-collecting .played-card {
+  animation: collect-trick 1750ms cubic-bezier(0.44, 0.02, 0.28, 1) both;
 }
 
 .hand-zone {
@@ -583,9 +729,94 @@ select:focus {
   opacity: 0.48;
 }
 
+.card.poker-hole-card:disabled {
+  opacity: 1;
+}
+
 .card.is-selected {
   transform: translateY(-16px);
   box-shadow: 0 20px 32px rgba(0, 0, 0, 0.35), 0 0 0 3px rgba(240, 198, 107, 0.75);
+}
+
+.hand-zone .card.is-dealing {
+  animation: deal-card-in 460ms calc(var(--card-index) * 34ms) cubic-bezier(0.2, 0.74, 0.22, 1) both;
+}
+
+.hand-zone .card.is-received {
+  animation: settle-received-card 520ms calc(var(--card-index) * 45ms) cubic-bezier(0.16, 0.8, 0.28, 1) both;
+}
+
+.card.is-passing-out {
+  --pass-x: 0px;
+  --pass-y: -220px;
+  animation: pass-card-out 500ms cubic-bezier(0.5, 0, 0.7, 0.35) both;
+  pointer-events: none;
+}
+
+.card.is-passing-out.to-left { --pass-x: -360px; --pass-y: -90px; }
+.card.is-passing-out.to-right { --pass-x: 360px; --pass-y: -90px; }
+.card.is-passing-out.to-top { --pass-y: -260px; }
+
+.received-hand .card {
+  --receive-x: 0px;
+  --receive-y: -170px;
+}
+
+.received-hand .card.from-left { --receive-x: -280px; --receive-y: 0px; }
+.received-hand .card.from-right { --receive-x: 280px; --receive-y: 0px; }
+
+.received-hand .card.is-arriving {
+  animation: receive-card-in 560ms calc(var(--card-index) * 90ms) cubic-bezier(0.16, 0.8, 0.24, 1) both;
+}
+
+.received-hand .card.is-accepting {
+  animation: accept-received-card 440ms calc(var(--card-index) * 35ms) cubic-bezier(0.45, 0, 0.72, 0.38) both;
+}
+
+@keyframes play-card-in {
+  from { opacity: 0.15; transform: translate(var(--enter-x), var(--enter-y)) rotate(8deg) scale(0.78); }
+  to { opacity: 1; transform: translate(0, 0) rotate(0) scale(1); }
+}
+
+@keyframes winner-flash {
+  0%, 100% { box-shadow: 0 10px 20px rgba(0, 0, 0, 0.28); }
+  28%, 78% { box-shadow: 0 0 0 4px rgba(240, 198, 107, 0.92), 0 0 30px rgba(240, 198, 107, 0.54), 0 18px 32px rgba(0, 0, 0, 0.4); transform: translateY(-7px); }
+}
+
+@keyframes collect-trick {
+  0%, 43% { opacity: 1; transform: translate(0, 0) scale(1); }
+  62% { opacity: 1; transform: translateX(calc(var(--slot-offset) * (var(--card-w) + 12px))) scale(0.88); }
+  100% { opacity: 0; transform: translate(calc(var(--slot-offset) * (var(--card-w) + 12px) + var(--collect-x)), var(--collect-y)) scale(0.34) rotate(6deg); }
+}
+
+@keyframes deal-card-in {
+  from { opacity: 0; transform: translate(0, -150px) rotate(-8deg) scale(0.82); }
+  to { opacity: 1; transform: translate(0, 0) rotate(0) scale(1); }
+}
+
+@keyframes pass-card-out {
+  from { opacity: 1; transform: translateY(-16px) scale(1); }
+  to { opacity: 0; transform: translate(var(--pass-x), var(--pass-y)) rotate(10deg) scale(0.72); }
+}
+
+@keyframes receive-card-in {
+  from { opacity: 0; transform: translate(var(--receive-x), var(--receive-y)) rotate(-9deg) scale(0.72); }
+  to { opacity: 1; transform: translate(0, 0) rotate(0) scale(1); }
+}
+
+@keyframes accept-received-card {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(170px) scale(0.72); }
+}
+
+@keyframes settle-received-card {
+  from { opacity: 0; transform: translateY(-76px) rotate(-7deg) scale(0.82); }
+  to { opacity: 1; transform: translateY(0) rotate(0) scale(1); }
+}
+
+@keyframes community-card-in {
+  from { opacity: 0; transform: translateY(-110px) rotate(-7deg) scale(0.78); }
+  to { opacity: 1; transform: translateY(0) rotate(0) scale(1); }
 }
 
 .card-rank {
@@ -850,6 +1081,37 @@ select:focus {
     transform: none;
   }
 
+  .poker-board {
+    position: static;
+    z-index: 2;
+    grid-column: 1 / -1;
+    width: 100%;
+    padding: 10px 0;
+    transform: none;
+  }
+
+  .community-cards {
+    gap: 5px;
+  }
+
+  .played-card.is-entering.enter-pos-bottom { --enter-y: 110px; }
+  .played-card.is-entering.enter-pos-top { --enter-y: -110px; }
+  .played-card.is-entering.enter-pos-left { --enter-x: -130px; }
+  .played-card.is-entering.enter-pos-right { --enter-x: 130px; }
+  .played-card.is-entering.enter-pos-top-left { --enter-x: -100px; --enter-y: -90px; }
+  .played-card.is-entering.enter-pos-top-right { --enter-x: 100px; --enter-y: -90px; }
+  .played-card.is-entering.enter-pos-bottom-left { --enter-x: -100px; --enter-y: 90px; }
+  .played-card.is-entering.enter-pos-bottom-right { --enter-x: 100px; --enter-y: 90px; }
+
+  .trick-zone.collect-pos-bottom { --collect-y: 145px; }
+  .trick-zone.collect-pos-top { --collect-y: -145px; }
+  .trick-zone.collect-pos-left { --collect-x: -155px; }
+  .trick-zone.collect-pos-right { --collect-x: 155px; }
+  .trick-zone.collect-pos-top-left { --collect-x: -125px; --collect-y: -120px; }
+  .trick-zone.collect-pos-top-right { --collect-x: 125px; --collect-y: -120px; }
+  .trick-zone.collect-pos-bottom-left { --collect-x: -125px; --collect-y: 120px; }
+  .trick-zone.collect-pos-bottom-right { --collect-x: 125px; --collect-y: 120px; }
+
   .hand-zone {
     position: static;
     z-index: 3;
@@ -896,8 +1158,27 @@ select:focus {
     padding: 12px;
   }
 
+  .poker-actions .button-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .toast {
     max-width: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .played-card,
+  .played-card .card,
+  .hand-zone .card,
+  .received-hand .card {
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
+  }
+
+  .community-card {
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
   }
 }
 

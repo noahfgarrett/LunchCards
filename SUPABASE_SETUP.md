@@ -15,11 +15,13 @@ Supabase docs checked for this setup:
 
 ## Hub Model
 
-- `table_cards_lobbies` stores lobby metadata, expiry, and the versioned canonical game snapshot.
+- `table_cards_lobbies` stores lobby metadata, expiry, and the versioned canonical game snapshot for Hearts, Spades, Euchre, or Hold'em.
 - `table_cards_players` stores seats, readiness, CPU settings, and hashed seat credentials.
 - Realtime Postgres Changes invalidates client state; a five-second poll is the fallback.
+- Active shared tables also poll every two seconds, independently of rendering, and refresh immediately when a phone returns to the foreground.
 - Public clients cannot directly insert, update, or delete lobby/player rows.
 - Token-validating RPCs provide atomic joins, host controls, heartbeats, and optimistic game updates.
+- Deterministic trick collection may be finalized by any seated client; optimistic versioning accepts exactly one identical result.
 
 ## Browser Config
 

@@ -1,14 +1,17 @@
 {
   "type": "module",
   "scripts": {
-    "build:vendor": "esbuild node_modules/@supabase/supabase-js/dist/index.mjs --bundle --format=esm --platform=browser --minify --outfile=supabase-client.js",
+    "build:vendor": "esbuild node_modules/@supabase/supabase-js/dist/index.mjs --bundle --format=esm --platform=browser --minify --outfile=supabase-client.js && esbuild poker-solver-entry.js --bundle --format=esm --platform=browser --minify --outfile=poker-solver.js",
     "test:e2e": "node tests/e2e.mjs",
+    "test:holdem": "node tests/holdem.mjs",
+    "test:animations": "node tests/animations.mjs",
     "test:difficulty": "node tests/difficulty-behavior.mjs",
     "test:rounds": "node tests/full-rounds.mjs",
     "test": "node tests/queue-state.test.js && node --check app.js && node --check sw.js"
   },
   "dependencies": {
-    "@supabase/supabase-js": "2.110.7"
+    "@supabase/supabase-js": "2.110.7",
+    "pokersolver": "2.1.4"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.10.2",

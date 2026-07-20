@@ -1,10 +1,12 @@
-const CACHE_NAME = "lunch-cards-v3";
+const CACHE_NAME = "lunch-cards-v4";
 const ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
   "./queue-state.js",
+  "./poker.js",
+  "./poker-solver.js",
   "./supabase-client.js",
   "./manifest.webmanifest",
   "./icon.svg",

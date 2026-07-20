@@ -3,9 +3,9 @@ create extension if not exists pgcrypto with schema extensions;
 create table if not exists public.table_cards_lobbies (
   id uuid primary key default gen_random_uuid(),
   code text not null unique,
-  game text not null check (game in ('hearts', 'spades', 'euchre')),
+  game text not null check (game in ('hearts', 'spades', 'euchre', 'holdem')),
   target_score integer not null default 100,
-  player_count integer not null check (player_count between 3 and 8),
+  player_count integer not null check (player_count between 2 and 8),
   difficulty text not null default 'normal' check (difficulty in ('easy', 'normal', 'hard', 'expert')),
   host_name text not null,
   host_token_hash text,
@@ -22,6 +22,10 @@ alter table public.table_cards_lobbies add column if not exists host_token_hash 
 alter table public.table_cards_lobbies add column if not exists game_state jsonb;
 alter table public.table_cards_lobbies add column if not exists game_version bigint not null default 0;
 alter table public.table_cards_lobbies add column if not exists expires_at timestamptz not null default (now() + interval '4 hours');
+alter table public.table_cards_lobbies drop constraint if exists table_cards_lobbies_game_check;
+alter table public.table_cards_lobbies add constraint table_cards_lobbies_game_check check (game in ('hearts', 'spades', 'euchre', 'holdem'));
+alter table public.table_cards_lobbies drop constraint if exists table_cards_lobbies_player_count_check;
+alter table public.table_cards_lobbies add constraint table_cards_lobbies_player_count_check check (player_count between 2 and 8);
 
 create table if not exists public.table_cards_players (
   id uuid primary key default gen_random_uuid(),
@@ -161,11 +165,13 @@ begin
   if p_code !~ '^[A-Z0-9]{5,8}$' or length(p_token) < 32 or length(p_client_id) < 8 then
     raise exception 'Invalid session credentials';
   end if;
-  if p_game not in ('hearts', 'spades', 'euchre')
+  if p_game not in ('hearts', 'spades', 'euchre', 'holdem')
      or p_difficulty not in ('easy', 'normal', 'hard', 'expert')
      or p_target not between 5 and 500
-     or p_player_count not between 3 and 8
+     or p_player_count not between 2 and 8
+     or (p_game in ('hearts', 'spades') and p_player_count < 3)
      or (p_game = 'euchre' and p_player_count <> 4)
+     or (p_game = 'holdem' and p_target < 100)
      or clean_name = '' then
     raise exception 'Invalid session setup';
   end if;
@@ -311,11 +317,13 @@ begin
   where code = upper(p_code) and host_token_hash = public.table_cards_hash_token(p_token)
   for update;
   if not found or target_lobby.status <> 'lobby' then raise exception 'Host access required'; end if;
-  if p_game not in ('hearts', 'spades', 'euchre')
+  if p_game not in ('hearts', 'spades', 'euchre', 'holdem')
      or p_difficulty not in ('easy', 'normal', 'hard', 'expert')
      or p_target not between 5 and 500
-     or p_player_count not between 3 and 8
-     or (p_game = 'euchre' and p_player_count <> 4) then
+     or p_player_count not between 2 and 8
+     or (p_game in ('hearts', 'spades') and p_player_count < 3)
+     or (p_game = 'euchre' and p_player_count <> 4)
+     or (p_game = 'holdem' and p_target < 100) then
     raise exception 'Invalid session setup';
   end if;
   select max(seat_index) into highest_human_seat from public.table_cards_players
@@ -440,12 +448,12 @@ begin
     when phase = 'trump' then (target_lobby.game_state ->> 'currentBidder')::integer
     else (target_lobby.game_state ->> 'current')::integer
   end;
-  if phase not in ('passing', 'received', 'roundover', 'gameover')
+  if phase not in ('passing', 'received', 'roundover', 'gameover', 'collecting', 'poker-showdown')
      and actor.seat_index <> actor_index
      and not (host_actor and coalesce((target_lobby.game_state -> 'players' -> actor_index ->> 'cpu')::boolean, false)) then
     raise exception 'It is not this seat''s turn';
   end if;
-  if phase in ('roundover', 'gameover') and not host_actor then
+  if phase in ('roundover', 'gameover', 'poker-showdown') and not host_actor then
     raise exception 'Only the host can advance the match';
   end if;
 

@@ -5,6 +5,7 @@ import {
   getJoinableSessions,
   makeSessionShareUrl
 } from "./queue-state.js";
+import { determinePokerWinners, solvePokerHand } from "./poker.js";
 
 const SUITS = ["hearts", "spades", "diamonds", "clubs"];
 const RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
@@ -43,6 +44,18 @@ const GAMES = {
     max: 4,
     defaultPlayers: 4,
     target: 10
+  },
+  holdem: {
+    title: "Texas Hold'em",
+    range: "2-8 players",
+    summary: "Build the best five-card hand, manage your chips, and outlast the table.",
+    min: 2,
+    max: 8,
+    defaultPlayers: 4,
+    target: 500,
+    targetLabel: "Starting Chips",
+    targetMin: 100,
+    targetStep: 50
   }
 };
 const SEAT_POSITIONS = [
@@ -67,7 +80,8 @@ const state = {
     difficulties: {
       hearts: "normal",
       spades: "normal",
-      euchre: "normal"
+      euchre: "normal",
+      holdem: "normal"
     },
     target: 100
   },
@@ -85,17 +99,25 @@ const state = {
   setupNameDraft: "",
   lobbyNameDraft: "",
   selectedPass: new Set(),
+  passingOutIds: new Set(),
   selectedCard: null,
   pendingReceived: [],
+  receivedHandAnimation: new Set(),
+  lastAnimatedDealKey: "",
+  lastAnimatedPlayKey: "",
+  lastAnimatedBoardKey: "",
+  lastAnimatedBoardCount: 0,
   toast: ""
 };
 let cpuTimer = null;
 let supabaseClientPromise = null;
 let queueTimer = null;
+let queueTimerMode = "";
 let heartbeatTimer = null;
 let realtimeChannel = null;
 let realtimeCode = "";
 let toastTimer = null;
+let trickTimer = null;
 
 function getClientId() {
   const legacyKey = "table-cards-client-id";
@@ -179,6 +201,10 @@ function uid(prefix = "id") {
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function motionDelay(milliseconds) {
+  return globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 20 : milliseconds;
 }
 
 function cardId(card) {
@@ -285,7 +311,7 @@ function readSetupConfig() {
   const players = game === "euchre" ? 4 : clamp(requested, meta.min, meta.max);
   const difficulty = document.querySelector("#difficulty")?.value || state.config.difficulties?.[game] || state.config.difficulty;
   const targetValue = Number(document.querySelector("#targetScore")?.value || meta.target);
-  const target = Number.isFinite(targetValue) ? targetValue : meta.target;
+  const target = Number.isFinite(targetValue) ? clamp(targetValue, meta.targetMin || 5, 500) : meta.target;
   state.config.difficulties = { ...state.config.difficulties, [game]: difficulty };
   return { game, players, difficulty, target, playerName };
 }
@@ -411,7 +437,17 @@ function createGameFromLobby(options = {}) {
     alone: false,
     sittingOut: null,
     teamBags: {},
-    playerBags: {}
+    playerBags: {},
+    community: [],
+    pokerDeck: [],
+    pot: 0,
+    currentBet: 0,
+    minRaise: 10,
+    bettingRound: "",
+    pokerActed: {},
+    smallBlind: 5,
+    bigBlind: 10,
+    showdown: null
   };
   state.game = base;
   state.gameVersion = 0;
@@ -472,6 +508,8 @@ function startRound(options = {}) {
   state.pendingReceived = [];
   game.round += 1;
   game.trick = [];
+  game.trickResolution = null;
+  game.lastPlayed = null;
   game.trickNumber = 1;
   game.heartsBroken = false;
   game.spadesBroken = false;
@@ -523,12 +561,300 @@ function startRound(options = {}) {
     game.message = `${game.upcard.suit} is up`;
     logLine(`Round ${game.round}: ${game.players[game.dealer].name} deals ${game.upcard.rank}${SUIT_SYMBOLS[game.upcard.suit]}.`);
   }
+  if (game.type === "holdem") startPokerHand(game);
   if (options.renderNow !== false) render();
 }
 
 function heartsPassDirection(round, count) {
   const cycle = count % 2 === 0 ? ["left", "right", "across", "hold"] : ["left", "right", "hold"];
   return cycle[(round - 1) % cycle.length];
+}
+
+function pokerNextIndex(game, from, predicate) {
+  for (let step = 1; step <= game.players.length; step += 1) {
+    const index = (from + step) % game.players.length;
+    if (predicate(game.players[index], index)) return index;
+  }
+  return -1;
+}
+
+function fundedPokerPlayer(player) {
+  return Number(player.chips) > 0;
+}
+
+function pokerActor(player) {
+  return !player.folded && !player.allIn && player.chips > 0;
+}
+
+function postPokerChips(game, player, amount) {
+  const contribution = Math.min(Math.max(0, amount), player.chips);
+  player.chips -= contribution;
+  player.bet += contribution;
+  player.committed += contribution;
+  player.total = player.chips;
+  game.pot += contribution;
+  if (player.chips === 0) player.allIn = true;
+  return contribution;
+}
+
+function startPokerHand(game) {
+  game.players.forEach(player => {
+    if (!Number.isFinite(player.chips)) player.chips = game.target;
+    player.total = player.chips;
+    player.hand = [];
+    player.folded = player.chips <= 0;
+    player.allIn = player.chips <= 0;
+    player.bet = 0;
+    player.committed = 0;
+    player.lastAction = player.chips <= 0 ? "Out" : "";
+  });
+  if (game.players.filter(fundedPokerPlayer).length <= 1) {
+    game.phase = "gameover";
+    game.message = "Tournament complete";
+    return;
+  }
+
+  game.dealer = pokerNextIndex(game, game.dealer, fundedPokerPlayer);
+  game.community = [];
+  game.pokerDeck = shuffle(buildDeck());
+  game.pot = 0;
+  game.lastPot = 0;
+  game.currentBet = 0;
+  game.minRaise = game.bigBlind;
+  game.bettingRound = "preflop";
+  game.pokerActed = {};
+  game.showdown = null;
+
+  const activeCount = game.players.filter(fundedPokerPlayer).length;
+  let cursor = game.dealer;
+  for (let card = 0; card < 2; card += 1) {
+    for (let seat = 0; seat < activeCount; seat += 1) {
+      cursor = pokerNextIndex(game, cursor, fundedPokerPlayer);
+      game.players[cursor].hand.push(game.pokerDeck.shift());
+    }
+  }
+  game.players.forEach(player => {
+    player.hand = sortHand(player.hand);
+  });
+
+  const smallBlindIndex = activeCount === 2 ? game.dealer : pokerNextIndex(game, game.dealer, fundedPokerPlayer);
+  const bigBlindIndex = pokerNextIndex(game, smallBlindIndex, fundedPokerPlayer);
+  const smallPosted = postPokerChips(game, game.players[smallBlindIndex], game.smallBlind);
+  const bigPosted = postPokerChips(game, game.players[bigBlindIndex], game.bigBlind);
+  game.players[smallBlindIndex].lastAction = `Small blind ${smallPosted}`;
+  game.players[bigBlindIndex].lastAction = `Big blind ${bigPosted}`;
+  game.currentBet = Math.max(game.players[smallBlindIndex].bet, game.players[bigBlindIndex].bet);
+  game.current = pokerNextIndex(game, bigBlindIndex, pokerActor);
+  game.phase = "poker-betting";
+  game.message = game.current >= 0 ? `${game.players[game.current].name} acts preflop` : "Running out the board";
+  logLine(`Hand ${game.round}: ${game.players[game.dealer].name} has the button.`);
+  logLine(`${game.players[smallBlindIndex].name} posts ${smallPosted}; ${game.players[bigBlindIndex].name} posts ${bigPosted}.`);
+  if (game.current < 0) runOutPokerBoard(game);
+}
+
+function pokerToCall(game, player) {
+  return Math.max(0, game.currentBet - player.bet);
+}
+
+function pokerActionLabel(action, amount) {
+  if (action === "fold") return "folds";
+  if (action === "check") return "checks";
+  if (action === "call") return `calls ${amount}`;
+  if (action === "allin") return `moves all-in for ${amount}`;
+  return `raises to ${amount}`;
+}
+
+function performPokerAction(game, playerIndex, action, requestedRaise = 0) {
+  if (game.phase !== "poker-betting" || game.current !== playerIndex) return false;
+  const player = game.players[playerIndex];
+  const toCall = pokerToCall(game, player);
+  let amount = 0;
+
+  if (action === "fold") {
+    player.folded = true;
+  } else if (action === "check") {
+    if (toCall > 0) return false;
+  } else if (action === "call") {
+    amount = postPokerChips(game, player, toCall);
+  } else if (action === "raise" || action === "allin") {
+    const priorBet = game.currentBet;
+    const maximum = player.bet + player.chips;
+    const minimum = Math.min(maximum, game.currentBet + game.minRaise);
+    const target = action === "allin" ? maximum : clamp(Number(requestedRaise), minimum, maximum);
+    amount = postPokerChips(game, player, target - player.bet);
+    if (player.bet > priorBet) {
+      const raiseSize = player.bet - priorBet;
+      if (raiseSize >= game.minRaise) game.minRaise = raiseSize;
+      game.currentBet = player.bet;
+      Object.keys(game.pokerActed).forEach(key => {
+        game.pokerActed[key] = false;
+      });
+    }
+  } else {
+    return false;
+  }
+
+  game.pokerActed[String(playerIndex)] = true;
+  player.lastAction = pokerActionLabel(action, action === "raise" ? player.bet : amount);
+  logLine(`${player.name} ${player.lastAction}.`);
+  advancePokerAction(game, playerIndex);
+  return true;
+}
+
+function advancePokerAction(game, fromIndex) {
+  const contenders = game.players.filter(player => !player.folded && player.committed >= 0);
+  if (contenders.length === 1) {
+    awardUncontestedPokerPot(game, contenders[0]);
+    return;
+  }
+  const actors = game.players.filter(pokerActor);
+  const streetComplete = actors.length === 0 || actors.every(player => game.pokerActed[String(game.players.indexOf(player))] && player.bet === game.currentBet);
+  if (streetComplete) {
+    advancePokerStreet(game);
+    return;
+  }
+  game.current = pokerNextIndex(game, fromIndex, pokerActor);
+  game.message = `${game.players[game.current].name} acts ${game.bettingRound}`;
+}
+
+function dealPokerCommunity(game, count) {
+  game.pokerDeck.shift();
+  for (let index = 0; index < count; index += 1) game.community.push(game.pokerDeck.shift());
+}
+
+function advancePokerStreet(game) {
+  game.players.forEach(player => {
+    player.bet = 0;
+  });
+  game.currentBet = 0;
+  game.minRaise = game.bigBlind;
+  game.pokerActed = {};
+  if (game.bettingRound === "preflop") {
+    dealPokerCommunity(game, 3);
+    game.bettingRound = "flop";
+  } else if (game.bettingRound === "flop") {
+    dealPokerCommunity(game, 1);
+    game.bettingRound = "turn";
+  } else if (game.bettingRound === "turn") {
+    dealPokerCommunity(game, 1);
+    game.bettingRound = "river";
+  } else {
+    settlePokerShowdown(game);
+    return;
+  }
+  logLine(`${game.bettingRound[0].toUpperCase()}${game.bettingRound.slice(1)}: ${game.community.map(card => `${card.rank}${SUIT_SYMBOLS[card.suit]}`).join(" ")}.`);
+  const actors = game.players.filter(pokerActor);
+  if (actors.length <= 1) {
+    runOutPokerBoard(game);
+    return;
+  }
+  game.current = pokerNextIndex(game, game.dealer, pokerActor);
+  game.message = `${game.players[game.current].name} acts on the ${game.bettingRound}`;
+}
+
+function runOutPokerBoard(game) {
+  while (game.community.length < 5) {
+    if (game.community.length === 0) dealPokerCommunity(game, 3);
+    else dealPokerCommunity(game, 1);
+  }
+  game.bettingRound = "river";
+  settlePokerShowdown(game);
+}
+
+function awardPokerChips(game, winnerIndexes, amount) {
+  const ordered = winnerIndexes.slice().sort((a, b) => {
+    const distanceA = (a - game.dealer + game.players.length) % game.players.length;
+    const distanceB = (b - game.dealer + game.players.length) % game.players.length;
+    return distanceA - distanceB;
+  });
+  const share = Math.floor(amount / ordered.length);
+  let remainder = amount % ordered.length;
+  ordered.forEach(index => {
+    const award = share + (remainder > 0 ? 1 : 0);
+    remainder -= remainder > 0 ? 1 : 0;
+    game.players[index].chips += award;
+    game.players[index].total = game.players[index].chips;
+  });
+}
+
+function settlePokerShowdown(game) {
+  game.lastPot = game.pot;
+  const levels = [...new Set(game.players.map(player => player.committed).filter(value => value > 0))].sort((a, b) => a - b);
+  const summaries = [];
+  let previous = 0;
+  levels.forEach(level => {
+    const contributors = game.players.map((player, index) => ({ player, index })).filter(entry => entry.player.committed >= level);
+    const eligible = contributors.filter(entry => !entry.player.folded);
+    const amount = (level - previous) * contributors.length;
+    previous = level;
+    if (!amount || !eligible.length) return;
+    const result = determinePokerWinners(eligible.map(entry => ({ index: entry.index, cards: entry.player.hand })), game.community);
+    const winnerIndexes = result.winners.map(entry => entry.index);
+    awardPokerChips(game, winnerIndexes, amount);
+    summaries.push({ amount, winnerIndexes, description: result.description });
+    logLine(`${winnerIndexes.map(index => game.players[index].name).join(" + ")} wins ${amount} with ${result.description}.`);
+  });
+  game.pot = 0;
+  game.showdown = { summaries };
+  finishPokerHand(game, "Showdown complete");
+}
+
+function awardUncontestedPokerPot(game, winner) {
+  const amount = game.pot;
+  game.lastPot = amount;
+  winner.chips += amount;
+  winner.total = winner.chips;
+  game.pot = 0;
+  game.showdown = { summaries: [{ amount, winnerIndexes: [game.players.indexOf(winner)], description: "Everyone else folded" }] };
+  logLine(`${winner.name} wins ${amount} uncontested.`);
+  finishPokerHand(game, `${winner.name} wins the pot`);
+}
+
+function finishPokerHand(game, message) {
+  game.players.forEach(player => {
+    player.total = player.chips;
+    player.bet = 0;
+  });
+  const funded = game.players.filter(fundedPokerPlayer);
+  game.phase = funded.length <= 1 ? "gameover" : "poker-showdown";
+  game.message = funded.length <= 1 ? `${funded[0]?.name || "Table"} wins the tournament` : message;
+}
+
+async function pokerHumanAction(action) {
+  const game = state.game;
+  const playerIndex = localPlayerIndex(game);
+  if (playerIndex < 0 || game.current !== playerIndex) return;
+  const requestedRaise = Number(document.querySelector("#raiseTo")?.value || 0);
+  if (!performPokerAction(game, playerIndex, action, requestedRaise)) return toast("That poker action is not available");
+  render();
+  await persistGameState();
+}
+
+function pokerHandStrength(game, player) {
+  if (game.community.length + player.hand.length >= 5) return Math.min(1, solvePokerHand([...player.hand, ...game.community]).rank / 9);
+  const [first, second] = player.hand.slice().sort((a, b) => b.rankValue - a.rankValue);
+  if (!first || !second) return 0;
+  const pair = first.rank === second.rank ? 0.36 + first.rankValue / 24 : 0;
+  const suited = first.suit === second.suit ? 0.08 : 0;
+  const connected = Math.abs(first.rankValue - second.rankValue) <= 2 ? 0.06 : 0;
+  return Math.min(1, pair + suited + connected + (first.rankValue + second.rankValue) / 34);
+}
+
+function choosePokerCpuAction(game, player) {
+  const strength = pokerHandStrength(game, player);
+  const profile = DIFFICULTY[player.difficulty] || DIFFICULTY.normal;
+  const toCall = pokerToCall(game, player);
+  const pressure = toCall / Math.max(1, player.chips + toCall);
+  if (player.difficulty === "easy") {
+    if (toCall === 0) return Math.random() < 0.24 ? { action: "raise", amount: game.currentBet + game.bigBlind } : { action: "check" };
+    return Math.random() < 0.2 ? { action: "fold" } : { action: "call" };
+  }
+  if (toCall > 0 && strength + profile.risk * 0.18 < pressure + 0.28) return { action: "fold" };
+  if (strength > 0.76 - profile.risk * 0.12 && player.chips > toCall) {
+    const target = Math.min(player.bet + player.chips, Math.max(game.currentBet + game.minRaise, game.currentBet + Math.round(game.pot * (0.32 + profile.risk * 0.35))));
+    return { action: target === player.bet + player.chips && strength > 0.92 ? "allin" : "raise", amount: target };
+  }
+  return toCall > 0 ? { action: "call" } : { action: "check" };
 }
 
 function passTarget(index, direction, count) {
@@ -558,18 +884,37 @@ function heartsRisk(card, difficulty) {
 }
 
 async function confirmHeartsPass() {
-  const game = state.game;
+  let game = state.game;
+  if (state.busyAction === "passing") return;
   if (state.selectedPass.size !== 3) {
     toast("Pick exactly 3 cards");
     return;
   }
-  const playerIndex = localPlayerIndex(game);
-  if (playerIndex < 0) return;
-  game.passSelections ||= {};
+  state.busyAction = "passing";
+  state.passingOutIds = new Set(state.selectedPass);
   const selectedCards = Array.from(state.selectedPass);
+  render();
+  await new Promise(resolve => setTimeout(resolve, motionDelay(520)));
+  game = state.game;
+  if (!game || game.phase !== "passing") {
+    state.passingOutIds.clear();
+    state.busyAction = "";
+    render();
+    return;
+  }
+  const playerIndex = localPlayerIndex(game);
+  if (playerIndex < 0) {
+    state.passingOutIds.clear();
+    state.busyAction = "";
+    render();
+    return;
+  }
+  game.passSelections ||= {};
   game.passSelections[String(playerIndex)] = selectedCards;
   if (isGameAuthority()) fillCpuPassSelections(game);
   state.selectedPass.clear();
+  state.passingOutIds.clear();
+  state.busyAction = "";
   game.message = "Waiting for everyone to pass";
   if (allPassesReady(game)) applyHeartsPasses(game);
   render();
@@ -584,6 +929,20 @@ async function confirmHeartsPass() {
       await persistGameState();
     }
   }
+}
+
+async function takeReceivedCards() {
+  const game = state.game;
+  const received = game?.receivedCards?.[String(localPlayerIndex())] || [];
+  if (!received.length || state.busyAction === "receiving") return;
+  state.busyAction = "receiving";
+  render();
+  await new Promise(resolve => setTimeout(resolve, motionDelay(460)));
+  state.reviewedReceivedVersion = `${game.round}:${received.map(card => card.id).join(",")}`;
+  state.pendingReceived = [];
+  state.receivedHandAnimation = new Set(received.map(card => card.id));
+  state.busyAction = "";
+  render();
 }
 
 function fillCpuPassSelections(game) {
@@ -699,6 +1058,7 @@ function validEuchreCards(game, player) {
 
 async function playCard(cardIdValue) {
   const game = state.game;
+  if (state.gameSyncing) return toast("Table is syncing");
   const player = game.players[game.current];
   const legal = validCards(player).some(card => card.id === cardIdValue);
   if (!legal || !player.human) {
@@ -716,10 +1076,11 @@ async function commitPlay(player, cardIdValue) {
   if (card.suit === "spades") game.spadesBroken = true;
   game.lastTrick = null;
   game.trick.push({ player: game.current, card });
+  game.lastPlayed = { player: game.current, cardId: card.id, trickNumber: game.trickNumber };
   logLine(`${player.name} plays ${card.rank}${SUIT_SYMBOLS[card.suit]}.`);
   const activePlayerCount = game.players.length - (game.sittingOut === null ? 0 : 1);
   if (game.trick.length === activePlayerCount) {
-    resolveTrick();
+    beginTrickCollection();
   } else {
     game.current = nextActivePlayer(game);
     game.message = `${game.players[game.current].name}'s turn`;
@@ -728,30 +1089,50 @@ async function commitPlay(player, cardIdValue) {
   await persistGameState();
 }
 
-function resolveTrick() {
+function beginTrickCollection() {
   const game = state.game;
   const winner = trickWinner(game);
-  const winnerPlayer = game.players[winner];
-  winnerPlayer.taken.push(...game.trick.map(play => play.card));
-  winnerPlayer.tricks += 1;
   const points = trickPoints(game);
-  winnerPlayer.roundPoints += points;
-  game.lastTrick = {
+  game.trickResolution = {
     plays: game.trick.map(play => ({ player: play.player, card: play.card })),
     winner,
     number: game.trickNumber,
     points
   };
-  game.trick = [];
   game.current = winner;
   game.leader = winner;
-  logLine(`${winnerPlayer.name} takes trick ${game.trickNumber}${points ? ` for ${points}` : ""}.`);
+  game.phase = "collecting";
+  game.message = `${game.players[winner].name} takes the trick`;
+  logLine(`${game.players[winner].name} takes trick ${game.trickNumber}${points ? ` for ${points}` : ""}.`);
+}
+
+async function finalizeTrickCollection() {
+  const game = state.game;
+  const resolution = game?.trickResolution;
+  if (!game || game.phase !== "collecting" || !resolution) return;
+  if (state.gameSyncing) {
+    trickTimer = setTimeout(() => void finalizeTrickCollection(), 220);
+    return;
+  }
+  const winnerPlayer = game.players[resolution.winner];
+  winnerPlayer.taken.push(...resolution.plays.map(play => play.card));
+  winnerPlayer.tricks += 1;
+  winnerPlayer.roundPoints += resolution.points;
+  game.lastTrick = structuredClone(resolution);
+  game.trick = [];
+  game.trickResolution = null;
+  game.lastPlayed = null;
   game.trickNumber += 1;
   if (game.players.every((player, index) => index === game.sittingOut || player.hand.length === 0)) {
     endRound();
   } else {
+    game.phase = "playing";
     game.message = `${winnerPlayer.name} leads`;
   }
+  state.gameSyncing = true;
+  render();
+  await persistGameState({ quietConflict: true, locked: true });
+  render();
 }
 
 function trickWinner(game) {
@@ -1036,6 +1417,16 @@ function euchrePower(card, trump) {
 async function runCpu() {
   const game = state.game;
   if (!game || state.screen !== "table") return;
+  if (game.phase === "poker-betting") {
+    const player = game.players[game.current];
+    if (player?.cpu) {
+      const decision = choosePokerCpuAction(game, player);
+      performPokerAction(game, game.current, decision.action, decision.amount);
+      render();
+      await persistGameState();
+    }
+    return;
+  }
   if (game.phase === "trump") {
     const player = game.players[game.currentBidder];
     if (player.cpu) {
@@ -1069,11 +1460,20 @@ function scheduleCpu() {
   if (!game) return;
   const shouldAct = isGameAuthority() && (
     (game.phase === "playing" && game.players[game.current]?.cpu) ||
+    (game.phase === "poker-betting" && game.players[game.current]?.cpu) ||
     (game.phase === "bidding" && game.players[game.current]?.cpu) ||
     (game.phase === "trump" && game.players[game.currentBidder]?.cpu)
   );
   if (shouldAct) {
     cpuTimer = setTimeout(runCpu, 540);
+  }
+}
+
+function scheduleTrickCollection() {
+  clearTimeout(trickTimer);
+  trickTimer = null;
+  if (state.game?.phase === "collecting") {
+    trickTimer = setTimeout(() => void finalizeTrickCollection(), motionDelay(1800));
   }
 }
 
@@ -1083,6 +1483,7 @@ function winnerLabel() {
   if (game.type === "hearts") {
     return game.players.slice().sort((a, b) => a.total - b.total)[0].name;
   }
+  if (game.type === "holdem") return game.players.slice().sort((a, b) => b.chips - a.chips)[0].name;
   if (new Set(game.players.map(player => player.team)).size < game.players.length) {
     const leader = game.players.slice().sort((a, b) => b.total - a.total)[0];
     return `Team ${leader.team + 1}`;
@@ -1093,9 +1494,11 @@ function winnerLabel() {
 function cardButton(card, options = {}) {
   const selected = options.selected ? " is-selected" : "";
   const red = RED_SUITS.has(card.suit) ? " red" : "";
+  const className = options.className ? ` ${options.className}` : "";
   const disabled = options.disabled ? " disabled" : "";
   const action = options.action || "play-card";
-  return `<button class="card${red}${selected}" data-action="${action}" data-card="${card.id}"${disabled} aria-label="${card.rank} of ${card.suit}">
+  const style = options.style ? ` style="${options.style}"` : "";
+  return `<button class="card${red}${selected}${className}" data-action="${action}" data-card="${card.id}"${disabled}${style} aria-label="${card.rank} of ${card.suit}">
     <span class="card-rank">${card.rank}</span>
     <span class="card-center">${SUIT_SYMBOLS[card.suit]}</span>
     <span class="card-suit">${SUIT_SYMBOLS[card.suit]}</span>
@@ -1116,7 +1519,7 @@ function renderTopbar() {
       <div class="mark">LC</div>
       <div>
         <h1>Lunch Cards</h1>
-        <p class="subtle">Hearts, Spades, Euchre</p>
+        <p class="subtle">Hearts, Spades, Euchre, Hold'em</p>
       </div>
     </div>
     <div class="button-row">
@@ -1149,8 +1552,8 @@ function renderSetup() {
           <select id="difficulty">${Object.entries(DIFFICULTY).map(([key, value]) => `<option value="${key}" ${key === selectedDifficulty ? "selected" : ""}>${value.label}</option>`).join("")}</select>
         </div>
         <div class="field">
-          <label for="targetScore">Target Score</label>
-          <input id="targetScore" type="number" min="5" max="500" value="${clamp(state.config.target, 5, 500)}">
+          <label for="targetScore">${meta.targetLabel || "Target Score"}</label>
+          <input id="targetScore" type="number" min="${meta.targetMin || 5}" max="500" step="${meta.targetStep || 1}" value="${clamp(state.config.target, meta.targetMin || 5, 500)}">
         </div>
         <div class="field">
           <label for="joinCode">Join By Code</label>
@@ -1182,7 +1585,7 @@ function renderSetup() {
         ${Object.entries(GAMES).map(([key, game]) => `<button class="game-card" data-action="select-game" data-game="${key}" aria-pressed="${state.config.game === key}">
           <strong>${game.title}</strong>
           <span>${game.summary}</span>
-          <div class="pill-row"><span class="pill">${game.range}</span><span class="pill">${game.target} target</span><span class="pill">CPU ${DIFFICULTY[state.config.difficulties?.[key] || state.config.difficulty].label}</span></div>
+          <div class="pill-row"><span class="pill">${game.range}</span><span class="pill">${game.target}${game.targetLabel ? " chips" : " target"}</span><span class="pill">CPU ${DIFFICULTY[state.config.difficulties?.[key] || state.config.difficulty].label}</span></div>
         </button>`).join("")}
       </div>
     </div>
@@ -1241,8 +1644,8 @@ function renderLobby() {
             <input id="hostPlayerCount" type="number" min="${meta.min}" max="${meta.max}" value="${lobby.config.players}" ${lobby.config.game === "euchre" ? "disabled" : ""}>
           </div>
           <div class="field">
-            <label for="hostTargetScore">Target Score</label>
-            <input id="hostTargetScore" type="number" min="5" max="500" value="${lobby.config.target}">
+            <label for="hostTargetScore">${meta.targetLabel || "Target Score"}</label>
+            <input id="hostTargetScore" type="number" min="${meta.targetMin || 5}" max="500" step="${meta.targetStep || 1}" value="${lobby.config.target}">
           </div>
           <div class="field">
             <label for="hostDifficulty">CPU Difficulty</label>
@@ -1262,7 +1665,7 @@ function renderLobby() {
           const occupant = lobby.seats.find(player => player.seat_index === index);
           return `<article class="seat-card ${occupant?.client_id === state.clientId ? "is-you" : ""}">
             <h3>${escapeHtml(formatSeatLabel(occupant, index))}</h3>
-            <p class="subtle">${occupant ? `${occupant.cpu ? `${DIFFICULTY[occupant.difficulty]?.label || "Normal"} CPU` : "Coworker"} · ${lobby.config.game === "hearts" ? "Individual" : `Team ${index % 2 + 1}`}` : "Waiting for a coworker or CPU."}</p>
+            <p class="subtle">${occupant ? `${occupant.cpu ? `${DIFFICULTY[occupant.difficulty]?.label || "Normal"} CPU` : "Coworker"} · ${["hearts", "holdem"].includes(lobby.config.game) ? "Individual" : `Team ${index % 2 + 1}`}` : "Waiting for a coworker or CPU."}</p>
           </article>`;
         }).join("")}
       </div>
@@ -1275,24 +1678,32 @@ function renderTable() {
   const human = localPlayer(game) || game.players[0];
   const humanIndex = game.players.indexOf(human);
   const legalIds = new Set(validCards(human).map(card => card.id));
+  const dealKey = `${game.id}:${game.round}`;
+  const animateDeal = state.lastAnimatedDealKey !== dealKey;
+  const receivedAnimations = new Set(state.receivedHandAnimation);
+  state.lastAnimatedDealKey = dealKey;
+  state.receivedHandAnimation.clear();
   return `${renderTopbar()}
   <section class="screen table-grid">
     <div class="table">
       ${renderStatus(game)}
       ${renderSeats(game)}
-      ${renderTrick(game)}
+      ${game.type === "holdem" ? renderPokerBoard(game) : renderTrick(game)}
       <div class="hand-zone">
         <div class="hand-toolbar">
           <div>
-            <strong>Your Hand</strong>
+            <strong>${game.type === "holdem" ? "Your Hole Cards" : "Your Hand"}</strong>
             <p class="subtle" aria-live="polite">${escapeHtml(game.message)}</p>
           </div>
           <div class="button-row">${renderPhaseButtons(game)}</div>
         </div>
         <div class="hand" tabindex="0" aria-label="Your hand">
-          ${human.hand.map(card => {
-            if (game.phase === "passing") return cardButton(card, { action: "select-pass", selected: state.selectedPass.has(card.id), disabled: Boolean(game.passSelections?.[String(humanIndex)]) });
-            return cardButton(card, { disabled: !legalIds.has(card.id) || game.current !== humanIndex || game.phase !== "playing" });
+          ${human.hand.map((card, index) => {
+            const passingOut = state.passingOutIds.has(card.id);
+            const animationClasses = [game.type === "holdem" ? "poker-hole-card" : "", animateDeal ? "is-dealing" : "", receivedAnimations.has(card.id) ? "is-received" : "", passingOut ? `is-passing-out to-${game.passDirection === "across" ? "top" : game.passDirection}` : ""].filter(Boolean).join(" ");
+            const animationStyle = `--card-index:${index}`;
+            if (game.phase === "passing") return cardButton(card, { action: "select-pass", selected: state.selectedPass.has(card.id), disabled: Boolean(game.passSelections?.[String(humanIndex)]) || state.busyAction === "passing", className: animationClasses, style: animationStyle });
+            return cardButton(card, { disabled: !legalIds.has(card.id) || game.current !== humanIndex || game.phase !== "playing" || state.gameSyncing, className: animationClasses, style: animationStyle });
           }).join("")}
         </div>
       </div>
@@ -1315,19 +1726,28 @@ function renderStatus(game) {
   const phase = game.phase === "roundover" || game.phase === "gameover" ? game.phase : game.message;
   return `<div class="status-strip">
     <div class="stat"><span>Game</span><strong>${GAMES[game.type].title}</strong></div>
-    <div class="stat"><span>Round</span><strong>${game.round}</strong></div>
+    <div class="stat"><span>${game.type === "holdem" ? "Hand" : "Round"}</span><strong>${game.round}</strong></div>
     <div class="stat"><span>Turn</span><strong>${escapeHtml(game.players[game.current]?.name || "Table")}</strong></div>
-    ${game.type === "euchre" ? `<div class="stat"><span>Trump</span><strong>${game.trump ? `${SUIT_SYMBOLS[game.trump]} ${game.trump}` : "Choosing"}</strong></div>` : `<div class="stat"><span>Trick</span><strong>${game.trickNumber}</strong></div>`}
+    ${game.type === "holdem" ? `<div class="stat"><span>${["poker-showdown", "gameover"].includes(game.phase) ? "Awarded" : "Pot"}</span><strong>${game.pot || game.lastPot || 0}</strong></div>` : game.type === "euchre" ? `<div class="stat"><span>Trump</span><strong>${game.trump ? `${SUIT_SYMBOLS[game.trump]} ${game.trump}` : "Choosing"}</strong></div>` : `<div class="stat"><span>Trick</span><strong>${game.trickNumber}</strong></div>`}
     <div class="stat"><span>State</span><strong>${escapeHtml(phase)}</strong></div>
   </div>`;
 }
 
 function renderSeats(game) {
-  const positions = SEAT_POSITIONS[game.players.length - 1] || SEAT_POSITIONS[3];
-  const origin = Math.max(0, localPlayerIndex(game));
   return game.players.map((player, index) => {
-    const visualIndex = (index - origin + game.players.length) % game.players.length;
-    return `<div class="seat ${positions[visualIndex]} ${game.current === index ? "is-turn" : ""} ${index === origin ? "is-you" : ""}">
+    const position = visualSeatPosition(game, index);
+    if (game.type === "holdem") {
+      const reveal = ["poker-showdown", "gameover"].includes(game.phase) && !player.folded;
+      const cards = reveal
+        ? player.hand.map(card => `<span class="poker-mini-card ${RED_SUITS.has(card.suit) ? "red" : ""}">${card.rank}${SUIT_SYMBOLS[card.suit]}</span>`).join("")
+        : player.hand.map(() => '<span class="poker-mini-card back" role="img" aria-label="Hidden card"></span>').join("");
+      return `<div class="seat ${position} ${game.current === index && game.phase === "poker-betting" ? "is-turn" : ""} ${index === Math.max(0, localPlayerIndex(game)) ? "is-you" : ""} ${player.folded ? "is-folded" : ""}">
+        <strong>${escapeHtml(player.name)}${game.dealer === index ? ' <span class="dealer-button" title="Dealer button">D</span>' : ""}</strong>
+        <div class="seat-meta"><span>${player.chips} chips</span><span>${player.bet ? `${player.bet} bet` : escapeHtml(player.lastAction || "")}</span></div>
+        <div class="poker-hole-cards">${cards}</div>
+      </div>`;
+    }
+    return `<div class="seat ${position} ${game.current === index ? "is-turn" : ""} ${index === Math.max(0, localPlayerIndex(game)) ? "is-you" : ""}">
     <strong>${escapeHtml(player.name)}</strong>
     <div class="seat-meta"><span>${index === game.sittingOut ? "Sitting out" : `${player.hand.length} cards`}</span><span>${player.tricks} tricks</span></div>
     <div class="mini-cards">${Array.from({ length: Math.min(player.hand.length, 12) }, () => '<span class="mini-card"></span>').join("")}</div>
@@ -1335,21 +1755,57 @@ function renderSeats(game) {
   }).join("");
 }
 
+function renderPokerBoard(game) {
+  const street = game.community.length === 0 ? "Preflop" : game.community.length === 3 ? "Flop" : game.community.length === 4 ? "Turn" : "River";
+  const boardKey = `${game.id}:${game.round}`;
+  const previousCount = state.lastAnimatedBoardKey === boardKey ? state.lastAnimatedBoardCount : 0;
+  state.lastAnimatedBoardKey = boardKey;
+  state.lastAnimatedBoardCount = game.community.length;
+  return `<div class="poker-board" aria-label="Texas Hold'em board">
+    <div class="poker-board-meta"><span class="pill">${street}</span><strong>${game.pot ? `${game.pot} chip pot` : `${game.lastPot || 0} chips awarded`}</strong></div>
+    <div class="community-cards">
+      ${game.community.map((card, index) => cardButton(card, { disabled: true, className: `community-card${index >= previousCount ? " is-dealing" : ""}`, style: `--card-index:${index}` })).join("")}
+      ${Array.from({ length: 5 - game.community.length }, () => '<span class="community-slot" aria-hidden="true"></span>').join("")}
+    </div>
+  </div>`;
+}
+
+function visualSeatPosition(game, playerIndex) {
+  const positions = SEAT_POSITIONS[game.players.length - 1] || SEAT_POSITIONS[3];
+  const origin = Math.max(0, localPlayerIndex(game));
+  return positions[(playerIndex - origin + game.players.length) % game.players.length];
+}
+
 function renderTrick(game) {
-  const display = game.trick.length ? game.trick : game.lastTrick?.plays || [];
-  const winner = !game.trick.length ? game.lastTrick?.winner : null;
-  return `<div class="trick-zone">
-    ${display.map(play => `<div class="played-card ${winner === play.player ? "is-winner" : ""}">${cardButton(play.card, { disabled: true })}<small>${escapeHtml(game.players[play.player].name)}</small></div>`).join("")}
+  const display = game.trick;
+  const resolution = game.phase === "collecting" ? game.trickResolution : null;
+  const winner = resolution?.winner;
+  const collectionPosition = winner === undefined ? "" : ` is-collecting collect-${visualSeatPosition(game, winner)}`;
+  const latest = game.lastPlayed;
+  const playKey = latest ? `${game.round}:${latest.trickNumber}:${latest.player}:${latest.cardId}` : "";
+  const animateLatest = Boolean(playKey && state.lastAnimatedPlayKey !== playKey);
+  if (animateLatest) state.lastAnimatedPlayKey = playKey;
+  return `<div class="trick-zone${collectionPosition}">
+    ${display.map((play, index) => {
+      const entering = animateLatest && latest.player === play.player && latest.cardId === play.card.id;
+      const classes = [winner === play.player ? "is-winner" : "", entering ? `is-entering enter-${visualSeatPosition(game, play.player)}` : ""].filter(Boolean).join(" ");
+      const slotOffset = (display.length - 1) / 2 - index;
+      return `<div class="played-card ${classes}" style="--slot-offset:${slotOffset}">${cardButton(play.card, { disabled: true })}<small>${escapeHtml(game.players[play.player].name)}</small></div>`;
+    }).join("")}
   </div>`;
 }
 
 function renderPhaseButtons(game) {
   if (game.phase === "passing") {
     const submitted = Boolean(game.passSelections?.[String(localPlayerIndex(game))]);
-    return `<button class="btn primary" data-action="confirm-pass" ${state.selectedPass.size === 3 && !submitted ? "" : "disabled"}>${submitted ? "Pass Locked" : "Pass 3"}</button>`;
+    const sending = state.busyAction === "passing";
+    return `<button class="btn primary" data-action="confirm-pass" ${state.selectedPass.size === 3 && !submitted && !sending ? "" : "disabled"}>${sending ? "Sending cards..." : submitted ? "Pass Locked" : "Pass 3"}</button>`;
   }
   if (game.phase === "roundover") {
     return isGameAuthority() ? '<button class="btn primary" data-action="new-round">Next Round</button>' : '<span class="pill">Waiting for host</span>';
+  }
+  if (game.phase === "poker-showdown") {
+    return isGameAuthority() ? '<button class="btn primary" data-action="new-round">Next Hand</button>' : '<span class="pill">Waiting for host</span>';
   }
   if (game.phase === "gameover") {
     return '<button class="btn primary" data-action="new-lobby">New Match</button>';
@@ -1358,6 +1814,11 @@ function renderPhaseButtons(game) {
 }
 
 function renderScoreRows(game) {
+  if (game.type === "holdem") {
+    return game.players.slice().sort((a, b) => b.chips - a.chips).map(player => `<div class="score-row ${game.players[game.current] === player && game.phase === "poker-betting" ? "is-turn" : ""}">
+      <div><strong>${escapeHtml(player.name)}</strong><p class="subtle">${player.folded ? "Folded" : escapeHtml(player.lastAction || "In hand")}</p></div><strong>${player.chips}</strong>
+    </div>`).join("");
+  }
   if (game.type !== "hearts" && new Set(game.players.map(player => player.team)).size < game.players.length) {
     return [...new Set(game.players.map(player => player.team))].map(team => {
       const players = game.players.filter(player => player.team === team);
@@ -1378,6 +1839,7 @@ function renderScoreRows(game) {
 function scoreSubline(game, player) {
   if (game.type === "hearts") return `${player.roundPoints} round points`;
   if (game.type === "spades") return `${player.tricks}/${player.bid ?? "-"} tricks · ${game.playerBags?.[game.players.indexOf(player)] || 0} bags`;
+  if (game.type === "holdem") return `${player.chips} chips`;
   return `Team ${player.team + 1} · ${player.tricks} tricks`;
 }
 
@@ -1385,11 +1847,29 @@ function renderActionPanel(game) {
   const playerIndex = localPlayerIndex(game);
   const received = game.receivedCards?.[String(playerIndex)] || [];
   const receivedVersion = `${game.round}:${received.map(card => card.id).join(",")}`;
+  if (game.type === "holdem" && game.phase === "poker-betting" && game.players[game.current]?.human) {
+    const player = game.players[game.current];
+    const toCall = pokerToCall(game, player);
+    const maximum = player.bet + player.chips;
+    const minimumRaise = Math.min(maximum, game.currentBet + game.minRaise);
+    return `<div class="action-panel poker-actions" role="dialog" aria-modal="true" aria-labelledby="pokerActionTitle">
+      <div class="panel-title"><h2 id="pokerActionTitle">Your Action</h2><span class="pill">${game.bettingRound} · ${game.pot} pot</span></div>
+      <div class="poker-action-summary"><span>${player.chips} chips</span><span>${toCall ? `${Math.min(toCall, player.chips)} to call` : "No bet to you"}</span></div>
+      ${maximum > game.currentBet ? `<div class="field"><label for="raiseTo">Raise total</label><input id="raiseTo" type="number" min="${minimumRaise}" max="${maximum}" step="${game.bigBlind}" value="${minimumRaise}"></div>` : ""}
+      <div class="button-row">
+        <button class="btn danger" data-action="poker-fold">Fold</button>
+        <button class="btn primary" data-action="${toCall ? "poker-call" : "poker-check"}">${toCall ? `Call ${Math.min(toCall, player.chips)}` : "Check"}</button>
+        ${maximum > game.currentBet ? '<button class="btn" data-action="poker-raise">Raise</button>' : ""}
+        <button class="btn" data-action="poker-allin">All In</button>
+      </div>
+    </div>`;
+  }
   if (received.length && state.reviewedReceivedVersion !== receivedVersion) {
+    const from = game.passDirection === "left" ? "right" : game.passDirection === "right" ? "left" : "top";
     return `<div class="action-panel" role="dialog" aria-modal="true" aria-labelledby="receivedTitle">
       <div class="panel-title"><h2 id="receivedTitle">Cards Received</h2><span class="pill">${game.passDirection}</span></div>
-      <div class="hand" tabindex="0" aria-label="Cards received">${received.map(card => cardButton(card, { disabled: true })).join("")}</div>
-      <div class="button-row"><button class="btn primary" data-action="take-received">Place In Hand</button></div>
+      <div class="hand received-hand" tabindex="0" aria-label="Cards received">${received.map((card, index) => cardButton(card, { disabled: true, className: `${state.busyAction === "receiving" ? "is-accepting" : "is-arriving"} from-${from}`, style: `--card-index:${index}` })).join("")}</div>
+      <div class="button-row"><button class="btn primary" data-action="take-received" ${state.busyAction === "receiving" ? "disabled" : ""}>${state.busyAction === "receiving" ? "Placing cards..." : "Place In Hand"}</button></div>
     </div>`;
   }
   if (game.phase === "bidding" && game.players[game.current]?.human) {
@@ -1733,7 +2213,7 @@ async function saveHostSettings() {
     p_code: state.lobby.code,
     p_token: getSeatToken(state.lobby.code),
     p_game: game,
-    p_target: clamp(target, 5, 500),
+    p_target: clamp(target, meta.targetMin || 5, 500),
     p_player_count: count,
     p_difficulty: difficulty
   });
@@ -1787,11 +2267,14 @@ async function launchLobby() {
   await refreshSessions();
 }
 
-async function persistGameState() {
-  if (!state.game || !isSharedGame()) return true;
-  if (state.gameSyncing) return false;
+async function persistGameState(options = {}) {
+  if (!state.game || !isSharedGame()) {
+    state.gameSyncing = false;
+    return true;
+  }
+  if (state.gameSyncing && !options.locked) return false;
   const supabase = await getSupabaseClient();
-  state.gameSyncing = true;
+  if (!options.locked) state.gameSyncing = true;
   const { data, error } = await supabase.rpc("table_cards_update_game", {
     p_code: state.lobby.code,
     p_token: getSeatToken(state.lobby.code),
@@ -1800,7 +2283,7 @@ async function persistGameState() {
   });
   state.gameSyncing = false;
   if (error || Number(data) < 0) {
-    toast(Number(data) < 0 ? "Table updated; syncing your view" : error.message || "Could not sync play");
+    if (error || !options.quietConflict) toast(Number(data) < 0 ? "Table updated; syncing your view" : error.message || "Could not sync play");
     await refreshLobby();
     return false;
   }
@@ -1868,22 +2351,35 @@ function render() {
     if (slot) slot.innerHTML = `<div class="toast">${escapeHtml(state.toast)}</div>`;
   }
   scheduleCpu();
+  scheduleTrickCollection();
   scheduleQueueRefresh();
 }
 
 function scheduleQueueRefresh() {
+  const mode = state.screen === "setup" ? "setup" : state.screen === "lobby" ? "lobby" : state.screen === "table" && isSharedGame() ? "table" : "";
+  if (queueTimer && queueTimerMode === mode) return;
   clearInterval(queueTimer);
-  if (state.screen === "setup") {
+  queueTimer = null;
+  queueTimerMode = mode;
+  if (mode === "setup") {
     queueTimer = setInterval(() => {
       if (!document.hidden) void refreshSessions();
     }, 15000);
   }
-  if (state.screen === "lobby" || (state.screen === "table" && isSharedGame())) {
+  if (mode === "lobby") {
     queueTimer = setInterval(() => {
       if (!document.hidden) void refreshLobby();
     }, 5000);
   }
+  if (mode === "table") queueTimer = setInterval(() => void refreshLobby(), 2000);
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  if (state.screen === "table" && isSharedGame()) void refreshLobby();
+  if (state.screen === "lobby") void refreshLobby();
+  if (state.screen === "setup") void refreshSessions();
+});
 
 app.addEventListener("click", event => {
   const target = event.target.closest("[data-action]");
@@ -1944,13 +2440,13 @@ app.addEventListener("click", event => {
     render();
   }
   if (action === "confirm-pass") void confirmHeartsPass();
-  if (action === "take-received") {
-    const received = state.game.receivedCards?.[String(localPlayerIndex())] || [];
-    state.reviewedReceivedVersion = `${state.game.round}:${received.map(card => card.id).join(",")}`;
-    state.pendingReceived = [];
-    render();
-  }
+  if (action === "take-received") void takeReceivedCards();
   if (action === "play-card") void playCard(target.dataset.card);
+  if (action === "poker-fold") void pokerHumanAction("fold");
+  if (action === "poker-check") void pokerHumanAction("check");
+  if (action === "poker-call") void pokerHumanAction("call");
+  if (action === "poker-raise") void pokerHumanAction("raise");
+  if (action === "poker-allin") void pokerHumanAction("allin");
   if (action === "submit-bid") void submitBid();
   if (action === "trump-order") void trumpAction("order", target.dataset.suit);
   if (action === "trump-alone") void trumpAction("alone", target.dataset.suit);

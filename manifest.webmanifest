@@ -1,7 +1,7 @@
 {
   "name": "Lunch Cards",
   "short_name": "Lunch Cards",
-  "description": "A coworker card-table PWA for Hearts, Spades, and Euchre.",
+  "description": "A coworker card-table PWA for Hearts, Spades, Euchre, and Texas Hold'em.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
