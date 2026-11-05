@@ -1,12 +1,12 @@
 # LunchCards
 
-Progressive Web App for coworker card sessions at:
+A card-game Progressive Web App for playing Hearts, Spades, Euchre, and Texas Hold'em with coworkers, live at:
 
 https://noahfgarrett.github.io/LunchCards/
 
-The static PWA is hosted on GitHub Pages and uses the existing `TableCards` Supabase project for live party and authoritative match state.
+The static PWA is hosted on GitHub Pages and uses Supabase for live party and authoritative match state (setup notes in `SUPABASE_SETUP.md`).
 
-Use **Play Solo** to start Hearts, Spades, Euchre, or Texas Hold'em immediately against CPU seats. Each game remembers its own CPU difficulty choice.
+Use **Play Solo** to start any of the four games immediately against CPU seats. Each game remembers its own CPU difficulty choice.
 
 Cards animate through dealing, Hearts passing and receiving, play-to-center, winner highlighting, and trick collection. Collection direction is rotated per client, so the same winning seat moves toward the correct person on every screen.
 
@@ -16,9 +16,21 @@ Cards animate through dealing, Hearts passing and receiving, play-to-center, win
 npm install
 npm run build:vendor
 npm test
+```
+
+The browser suites expect the app on `http://127.0.0.1:4173` (override with `LUNCH_CARDS_URL`). Serve the folder in one terminal:
+
+```sh
 python3 -m http.server 4173
+```
+
+and run the suites in another:
+
+```sh
 npm run test:animations
 npm run test:holdem
+npm run test:difficulty
+npm run test:rounds
 npm run test:e2e
 ```
 
